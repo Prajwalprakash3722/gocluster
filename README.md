@@ -21,12 +21,14 @@ GoCluster is a lightweight distributed cluster manager written in Go that provid
 - **Health Monitoring** - Continuous health checks with automatic failover
 - **State Management** - Clean and consistent cluster state management
 - **Simple Configuration** - Easy setup using standard configuration files
+- **Web Interface** - Real-time cluster monitoring with automatic updates and interactive displays (see below for setup)
+
 
 ## 🛠️ Getting Started
 
 ### Prerequisites
 
-- Go 1.19 or higher
+- Go 1.21 or higher
 - Linux/Unix environment, If you have windows, throw it out :)
 
 ### Installation
@@ -57,6 +59,16 @@ node003 = "node003.devcoffee.me:7946"
 ```bash
 ./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946
 ```
+3. Enabling the Web Interface
+To view the real-time cluster monitoring interface:
+
+Start the agent with the web server enabled by adding the -web flag:
+
+```bash
+./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946 -web 0.0.0.0:8080
+```
+Access the web UI at http://node001:8080. (The interface provides an interactive overview of your cluster, including each node’s status, leader election details, and last seen timestamps.)
+
 
 ## 📊 Sample Outputs
 
