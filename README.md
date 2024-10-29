@@ -16,7 +16,7 @@ GoCluster is a lightweight distributed cluster manager written in Go that provid
 
 ## 🚀 Features
 
-- **Automatic Node Discovery** - Zero-configuration node discovery using UDP
+- **Automatic Node Discovery** - Node discovery using UDP
 - **Smart Leader Election** - Simple and efficient leader election based on node ID
 - **Health Monitoring** - Continuous health checks with automatic failover
 - **State Management** - Clean and consistent cluster state management
@@ -94,7 +94,7 @@ Cluster nodes:
 2024/10/29 12:36:50 Updated node node002 state to follower
 ```
 
-## 🗺️ Future Plans (mainly dependent on my intrest)
+## 🗺️ Future Plans (mainly dependent on my interest)
 
 - [ ] Distributed task execution system
 - [ ] Secure communication (TLS/mTLS)
