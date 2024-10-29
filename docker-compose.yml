@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  node1:
+    build: .
+    container_name: cluster-node1
+    hostname: node001
+    networks:
+      - cluster-net
+    environment:
+      - HOSTNAME=node001
+
+  node2:
+    build: .
+    container_name: cluster-node2
+    hostname: node002
+    networks:
+      - cluster-net
+    environment:
+      - HOSTNAME=node002
+
+  node3:
+    build: .
+    container_name: cluster-node3
+    hostname: node003
+    networks:
+      - cluster-net
+    environment:
+      - HOSTNAME=node003
+
+networks:
+  cluster-net:
+    driver: bridge
