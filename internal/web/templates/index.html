@@ -1,0 +1,115 @@
+{{define "status"}}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GoCluster Status</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">GoCluster Status</h1>
+                <div class="flex items-center">
+                    <div id="statusDot" class="w-3 h-3 rounded-full bg-green-500 pulse mr-2"></div>
+                    <span id="lastUpdate" class="text-sm text-gray-500">Updating...</span>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors duration-150">
+                    <h2 class="text-xl font-semibold mb-4">Local Node</h2>
+                    <div id="localNode" class="space-y-2">
+                        <p><span class="font-medium">Cluster Name:</span> {{.ClusterName}}</p>
+                        <p><span class="font-medium">ID:</span> {{.LocalNode.ID}}</p>
+                        <p><span class="font-medium">State:</span> 
+                            <span class="px-2 py-1 rounded-full text-sm {{if eq .LocalNode.State "leader"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800{{end}}">
+                                {{.LocalNode.State}}
+                            </span>
+                        </p>
+                        <p><span class="font-medium">Address:</span> {{.LocalNode.Address}}:{{.LocalNode.Port}}</p>
+                    </div>
+                </div>
+                
+                <div class="bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors duration-150">
+                    <h2 class="text-xl font-semibold mb-4">Cluster Info</h2>
+                    <div id="clusterInfo" class="space-y-2">
+                        <p><span class="font-medium">Leader:</span> {{.Leader}}</p>
+                        <p><span class="font-medium">Total Nodes:</span> {{len .Nodes}}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow-lg p-6">
+            <h2 class="text-xl font-semibold mb-4">Cluster Nodes</h2>
+            <div id="nodes" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {{range .Nodes}}
+                <div class="bg-white p-4 rounded-lg shadow hover:shadow-lg transition-shadow duration-150 cursor-pointer" title="Click for details">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="font-medium">{{.ID}}</h3>
+                            <p class="text-sm text-gray-500">{{.Address}}:{{.Port}}</p>
+                        </div>
+                        <span class="px-2 py-1 rounded-full text-sm {{if eq .State "leader"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800{{end}}">
+                            {{.State}}
+                        </span>
+                    </div>
+                    <div class="mt-2 text-sm text-gray-500">
+                        Last seen: <span class="last-seen" data-time="{{.LastSeen}}"></span>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const evtSource = new EventSource('/events');
+        
+        function timeAgo(date) {
+            const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+            if (seconds < 60) return seconds + "s ago";
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes + "m ago";
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours + "h ago";
+            return Math.floor(hours / 24) + "d ago";
+        }
+
+        function updateTimes() {
+            document.querySelectorAll('.last-seen').forEach(el => {
+                const time = el.getAttribute('data-time');
+                el.textContent = timeAgo(time);
+            });
+        }
+
+        function updateStatus(data) {
+            document.getElementById('statusDot').classList.add('bg-green-500');
+            document.getElementById('statusDot').classList.remove('bg-red-500');
+            document.getElementById('lastUpdate').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+        }
+
+        setInterval(updateTimes, 1000);
+        updateTimes();
+
+        evtSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            updateStatus(data);
+        };
+
+        evtSource.onerror = function() {
+            document.getElementById('statusDot').classList.remove('bg-green-500');
+            document.getElementById('statusDot').classList.add('bg-red-500');
+        };
+    </script>
+</body>
+</html>
+{{end}}

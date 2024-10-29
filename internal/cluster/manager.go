@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"agent/internal/config"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"agent/internal/config"
 )
 
 type ManagerOptions struct {
@@ -64,6 +63,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		cancel: cancel,
 	}, nil
 }
+
 func (m *Manager) Start() error {
 	addr := &net.UDPAddr{
 		IP:   net.ParseIP(m.localNode.Address),
@@ -369,4 +369,29 @@ func (m *Manager) electNewLeader() {
 		m.leaderID = lowestID
 		log.Printf("Following new leader: %s", lowestID)
 	}
+}
+
+func (m *Manager) GetNodes() map[string]*Node {
+	m.nodesMu.RLock()
+	defer m.nodesMu.RUnlock()
+
+	nodes := make(map[string]*Node)
+	for k, v := range m.nodes {
+		nodeCopy := *v
+		nodes[k] = &nodeCopy
+	}
+	return nodes
+}
+
+func (m *Manager) GetLocalNode() *Node {
+	nodeCopy := *m.localNode
+	return &nodeCopy
+}
+
+func (m *Manager) GetLeaderID() string {
+	return m.leaderID
+}
+
+func (m *Manager) GetClusterName() string {
+	return m.cfg.ClusterName
 }
