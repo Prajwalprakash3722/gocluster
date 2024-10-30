@@ -118,8 +118,9 @@ func (o *AerospikeOperator) Info() operator.OperatorInfo {
 				Config: map[string]operator.ParamSchema{
 					"config_path": {
 						Type:        "string",
-						Required:    true,
-						Description: "Path to Aerospike configuration file",
+						Required:    false,
+						Default:     "/etc/aerospike/config.conf",
+						Description: "Configuration file path",
 					},
 					"validate": {
 						Type:        "bool",
