@@ -24,7 +24,7 @@ func (m *OperatorManager) RegisterOperator(op Operator) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	name := op.Name()
+	name := op.Info().Name
 	if _, exists := m.operators[name]; exists {
 		return fmt.Errorf("operator %s already registered", name)
 	}

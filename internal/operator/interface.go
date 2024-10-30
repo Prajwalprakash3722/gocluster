@@ -8,7 +8,7 @@ import (
 // Operator represents a plugin that can perform operations on the cluster
 type Operator interface {
 	// Name returns the unique identifier of the operator
-	Name() string
+	Info() OperatorInfo
 
 	// Init initializes the operator with cluster configuration
 	Init(config map[string]interface{}) error

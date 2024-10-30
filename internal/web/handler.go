@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 //go:embed templates/*
@@ -51,45 +52,23 @@ func NewHandler(manager *cluster.Manager) (*Handler, error) {
 	return h, nil
 }
 
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) SetupRoutes(app *fiber.App) {
 	// API routes
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		h.handleAPI(w, r)
-		return
-	}
+	api := app.Group("/api")
+
+	api.Get("/status", h.handleAPIStatus)
+	api.Get("/nodes", h.handleAPINodes)
+	api.Get("/leader", h.handleAPILeader)
+	api.Get("/node", h.handleAPINode)
+	api.Get("/operator/list", h.handleAPIListOperators)
+	api.Post("/operator/trigger/:name", h.handleAPIOperator)
 
 	// Web UI routes
-	switch r.URL.Path {
-	case "/":
-		h.handleIndex(w, r)
-	case "/events":
-		h.handleEvents(w, r)
-	default:
-		http.NotFound(w, r)
-	}
+	app.Get("/", h.handleIndex)
+	app.Get("/events", h.handleEvents)
 }
 
-func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	switch r.URL.Path {
-	case "/api/status":
-		h.handleAPIStatus(w, r)
-	case "/api/nodes":
-		h.handleAPINodes(w, r)
-	case "/api/leader":
-		h.handleAPILeader(w, r)
-	case "/api/node":
-		h.handleAPINode(w, r)
-	default:
-		json.NewEncoder(w).Encode(APIResponse{
-			Success: false,
-			Error:   "endpoint not found",
-		})
-	}
-}
-
-func (h *Handler) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAPIStatus(c *fiber.Ctx) error {
 	status := StatusUpdate{
 		ClusterName: h.manager.GetClusterName(),
 		LocalNode:   h.manager.GetLocalNode(),
@@ -98,16 +77,15 @@ func (h *Handler) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		Timestamp:   time.Now(),
 	}
 
-	json.NewEncoder(w).Encode(APIResponse{
+	return c.JSON(APIResponse{
 		Success: true,
 		Data:    status,
 	})
 }
 
-func (h *Handler) handleAPINodes(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAPINodes(c *fiber.Ctx) error {
 	nodes := h.manager.GetNodes()
 
-	// Convert to a more API-friendly format
 	nodesArray := make([]map[string]interface{}, 0, len(nodes))
 	for id, node := range nodes {
 		nodeMap := map[string]interface{}{
@@ -121,18 +99,18 @@ func (h *Handler) handleAPINodes(w http.ResponseWriter, r *http.Request) {
 		nodesArray = append(nodesArray, nodeMap)
 	}
 
-	json.NewEncoder(w).Encode(APIResponse{
+	return c.JSON(APIResponse{
 		Success: true,
 		Data:    nodesArray,
 	})
 }
 
-func (h *Handler) handleAPILeader(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAPILeader(c *fiber.Ctx) error {
 	leaderID := h.manager.GetLeaderID()
 	nodes := h.manager.GetNodes()
 
 	if leader, exists := nodes[leaderID]; exists {
-		json.NewEncoder(w).Encode(APIResponse{
+		return c.JSON(APIResponse{
 			Success: true,
 			Data: map[string]interface{}{
 				"id":        leaderID,
@@ -142,28 +120,26 @@ func (h *Handler) handleAPILeader(w http.ResponseWriter, r *http.Request) {
 				"last_seen": leader.LastSeen,
 			},
 		})
-		return
 	}
 
-	json.NewEncoder(w).Encode(APIResponse{
+	return c.JSON(APIResponse{
 		Success: false,
 		Error:   "no leader found",
 	})
 }
 
-func (h *Handler) handleAPINode(w http.ResponseWriter, r *http.Request) {
-	nodeID := r.URL.Query().Get("id")
+func (h *Handler) handleAPINode(c *fiber.Ctx) error {
+	nodeID := c.Query("id")
 	if nodeID == "" {
-		json.NewEncoder(w).Encode(APIResponse{
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
 			Success: false,
 			Error:   "node id required",
 		})
-		return
 	}
 
 	nodes := h.manager.GetNodes()
 	if node, exists := nodes[nodeID]; exists {
-		json.NewEncoder(w).Encode(APIResponse{
+		return c.JSON(APIResponse{
 			Success: true,
 			Data: map[string]interface{}{
 				"id":        nodeID,
@@ -175,20 +151,23 @@ func (h *Handler) handleAPINode(w http.ResponseWriter, r *http.Request) {
 				"is_leader": nodeID == h.manager.GetLeaderID(),
 			},
 		})
-		return
 	}
 
-	json.NewEncoder(w).Encode(APIResponse{
+	return c.JSON(APIResponse{
 		Success: false,
 		Error:   "node not found",
 	})
 }
 
-func (h *Handler) handleAPIOperator(w http.ResponseWriter, r *http.Request) {
-
+func (h *Handler) handleAPIListOperators(c *fiber.Ctx) error {
+	operators := h.manager.ListOperators()
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    operators,
+	})
 }
 
-func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleIndex(c *fiber.Ctx) error {
 	data := StatusUpdate{
 		ClusterName: h.manager.GetClusterName(),
 		LocalNode:   h.manager.GetLocalNode(),
@@ -197,40 +176,42 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Timestamp:   time.Now(),
 	}
 
-	err := h.templates.ExecuteTemplate(w, "status", data)
+	err := h.templates.ExecuteTemplate(c.Response().BodyWriter(), "status", data)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
 	}
+	return nil
 }
 
-func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+func (h *Handler) handleEvents(c *fiber.Ctx) error {
+    c.Set("Content-Type", "text/event-stream")
+    c.Set("Cache-Control", "no-cache")
+    c.Set("Connection", "keep-alive")
 
-	statusChan := make(chan StatusUpdate)
-	h.clientsMux.Lock()
-	h.clients[statusChan] = true
-	h.clientsMux.Unlock()
+    statusChan := make(chan StatusUpdate)
+    h.clientsMux.Lock()
+    h.clients[statusChan] = true
+    h.clientsMux.Unlock()
 
-	defer func() {
-		h.clientsMux.Lock()
-		delete(h.clients, statusChan)
-		h.clientsMux.Unlock()
-		close(statusChan)
-	}()
+    defer func() {
+        h.clientsMux.Lock()
+        delete(h.clients, statusChan)
+        h.clientsMux.Unlock()
+        close(statusChan)
+    }()
 
-	for {
-		select {
-		case status := <-statusChan:
-			data, _ := json.Marshal(status)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			w.(http.Flusher).Flush()
-		case <-r.Context().Done():
-			return
-		}
-	}
+    for {
+        select {
+        case status := <-statusChan:
+            data, _ := json.Marshal(status)
+            c.Write([]byte(fmt.Sprintf("data: %s\n\n", data)))
+            if flusher, ok := c.Response().BodyWriter().(http.Flusher); ok {
+                flusher.Flush()
+            }
+        case <-c.Context().Done():
+            return nil
+        }
+    }
 }
 
 func (h *Handler) broadcastStatus() {
@@ -255,4 +236,44 @@ func (h *Handler) broadcastStatus() {
 		}
 		h.clientsMux.RUnlock()
 	}
+}
+
+func (h *Handler) handleAPIOperator(c *fiber.Ctx) error {
+	if c.Method() != fiber.MethodPost {
+		return c.Status(fiber.StatusMethodNotAllowed).JSON(APIResponse{
+			Success: false,
+			Error:   "method not allowed",
+		})
+	}
+
+	operatorName := c.Params("name")
+	if operatorName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error:   "invalid operator path",
+		})
+	}
+
+	var params map[string]interface{}
+	if err := c.BodyParser(&params); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error:   fmt.Sprintf("invalid request body: %v", err),
+		})
+	}
+
+	ctx := c.Context()
+	if err := h.manager.ExecuteOperator(ctx, operatorName, params); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error:   err.Error(),
+		})
+	}
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data: map[string]string{
+			"message": fmt.Sprintf("operator %s executed successfully", operatorName),
+		},
+	})
 }

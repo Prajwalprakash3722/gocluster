@@ -407,7 +407,7 @@ func (m *Manager) RegisterOperator(op operator.Operator) error {
 		m.operators = make(map[string]operator.Operator)
 	}
 
-	name := op.Name()
+	name := op.Info().Name
 	if _, exists := m.operators[name]; exists {
 		return fmt.Errorf("operator %s already registered", name)
 	}
@@ -428,24 +428,50 @@ func (m *Manager) GetOperator(name string) (operator.Operator, error) {
 	return op, nil
 }
 
-// ExecuteOperator executes an operator on the cluster
-func (m *Manager) ExecuteOperator(name string, params map[string]interface{}) error {
+func (m *Manager) ExecuteOperator(ctx context.Context, name string, params map[string]interface{}) error {
 	op, err := m.GetOperator(name)
 	if err != nil {
-		return err
+		return fmt.Errorf("operator %s not found", name)
 	}
 
-	return op.Execute(m.ctx, params)
+	// check if operation parameter is present in the operator
+	if _, exists := params["operation"]; !exists {
+		return fmt.Errorf("operation parameter is missing")
+	}
+
+	// Get operator info for validation
+	info := op.Info()
+
+	// Validate required parameters
+	for _, param := range info.Parameters {
+		if param.Required {
+			if _, exists := params[param.Name]; !exists {
+				return fmt.Errorf("required parameter %s is missing", param.Name)
+			}
+		}
+	}
+
+	// Execute the operator
+	if err := op.Execute(ctx, params); err != nil {
+		return fmt.Errorf("operator execution failed: %w", err)
+	}
+
+	return op.Cleanup()
 }
 
 // ListOperators returns a list of all registered operators
-func (m *Manager) ListOperators() []string {
+func (m *Manager) ListOperators() []operator.OperatorInfo {
 	m.operatorsMu.RLock()
 	defer m.operatorsMu.RUnlock()
 
-	var operators []string
+	var operators []operator.OperatorInfo
 	for name := range m.operators {
-		operators = append(operators, name)
+
+		op, err := m.GetOperator(name)
+		if err != nil {
+			return nil
+		}
+		operators = append(operators, op.Info())
 	}
 	return operators
 }

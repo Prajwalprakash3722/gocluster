@@ -1,4 +1,4 @@
-// FYI whole thing is generated from chatGpt, IDK anything about aerospike configuration,
+// FYI some parts are generated from chatGpt, IDK anything about aerospike configuration,
 // just a simple example of how operators can be developed and used
 package aerospike_operator
 
@@ -126,6 +126,9 @@ func (o *AerospikeOperator) Execute(ctx context.Context, params map[string]inter
 				}
 
 				return o.AddNamespace(ctx, nsConfig)
+
+			default:
+				return fmt.Errorf("unknown operation type: %s", opType)
 			}
 		}
 

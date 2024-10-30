@@ -8,13 +8,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -57,24 +57,6 @@ func initializeAerospikeOperator(manager *cluster.Manager) error {
 		return err
 	}
 	log.Printf("Registered Aerospike operator")
-
-	params := map[string]interface{}{
-		"operation": "add_namespace",
-		"namespace": map[string]interface{}{
-			"name": "testing_in_stg",
-		},
-	}
-
-	ctx := context.Background()
-	// manually calling execute for now, ideally this will be called externally to the cluster manager
-	if err := aeroOp.Execute(ctx, params); err != nil {
-		log.Fatalf("Failed to execute: %v", err)
-	}
-
-	// After operations
-	if err := aeroOp.Cleanup(); err != nil {
-		log.Printf("Cleanup failed: %v", err)
-	}
 
 	return nil
 }
@@ -125,9 +107,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to create web handler: %v", err)
 		}
 
+		app := fiber.New(fiber.Config{
+			DisableStartupMessage: true,
+		})
+		handler.SetupRoutes(app)
+
 		go func() {
 			log.Printf("Starting web UI at http://%s", cfg.Cluster.WebAddress)
-			if err := http.ListenAndServe(cfg.Cluster.WebAddress, handler); err != nil {
+			if err := app.Listen(cfg.Cluster.WebAddress); err != nil {
 				log.Printf("Web server error: %v", err)
 			}
 		}()
