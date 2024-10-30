@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"agent/internal/config"
+	"agent/internal/operator"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,14 +21,16 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
-	cfg       *config.Config
-	localNode *Node
-	nodes     map[string]*Node
-	nodesMu   sync.RWMutex
-	leaderID  string
-	conn      *net.UDPConn
-	ctx       context.Context
-	cancel    context.CancelFunc
+	cfg         *config.Config
+	localNode   *Node
+	nodes       map[string]*Node
+	nodesMu     sync.RWMutex
+	leaderID    string
+	conn        *net.UDPConn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	operators   map[string]operator.Operator
+	operatorsMu sync.RWMutex
 }
 
 func NewManager(opts ManagerOptions) (*Manager, error) {
@@ -349,7 +352,7 @@ func (m *Manager) electNewLeader() {
 		return
 	}
 
-	// Find the node with lowest ID (including ourselves) (we can also choose this ramndoml or by hashing but keeping it simple)
+	// Find the node with lowest ID (including ourselves) (we can also choose this random or by hashing but kiss for now)
 	lowestID := m.localNode.ID
 	isLowest := true
 
@@ -395,3 +398,96 @@ func (m *Manager) GetLeaderID() string {
 func (m *Manager) GetClusterName() string {
 	return m.cfg.ClusterName
 }
+
+func (m *Manager) RegisterOperator(op operator.Operator) error {
+	m.operatorsMu.Lock()
+	defer m.operatorsMu.Unlock()
+
+	if m.operators == nil {
+		m.operators = make(map[string]operator.Operator)
+	}
+
+	name := op.Name()
+	if _, exists := m.operators[name]; exists {
+		return fmt.Errorf("operator %s already registered", name)
+	}
+
+	m.operators[name] = op
+	return nil
+}
+
+func (m *Manager) GetOperator(name string) (operator.Operator, error) {
+	m.operatorsMu.RLock()
+	defer m.operatorsMu.RUnlock()
+
+	op, exists := m.operators[name]
+	if !exists {
+		return nil, fmt.Errorf("operator %s not found", name)
+	}
+
+	return op, nil
+}
+
+// ExecuteOperator executes an operator on the cluster
+func (m *Manager) ExecuteOperator(name string, params map[string]interface{}) error {
+	op, err := m.GetOperator(name)
+	if err != nil {
+		return err
+	}
+
+	return op.Execute(m.ctx, params)
+}
+
+// ListOperators returns a list of all registered operators
+func (m *Manager) ListOperators() []string {
+	m.operatorsMu.RLock()
+	defer m.operatorsMu.RUnlock()
+
+	var operators []string
+	for name := range m.operators {
+		operators = append(operators, name)
+	}
+	return operators
+}
+
+// BroadcastOperatorResult broadcasts operator results to all nodes if needed
+func (m *Manager) BroadcastOperatorResult(operatorName string, result map[string]interface{}) {
+	// Only leader can broadcast operator results
+	if m.localNode.State != StateLeader {
+		return
+	}
+
+	// Create operator result message
+	msg := Message{
+		ID:       m.localNode.ID,
+		Hostname: m.localNode.Hostname,
+		State:    m.localNode.State,
+		Type:     "operator_result",
+		Data: map[string]interface{}{
+			"operator": operatorName,
+			"result":   result,
+		},
+	}
+
+	// Broadcast to all nodes
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Error marshaling operator result: %v", err)
+		return
+	}
+
+	for _, node := range m.nodes {
+		addr := &net.UDPAddr{
+			IP:   net.ParseIP(node.Address),
+			Port: node.Port,
+		}
+
+		_, err = m.conn.WriteToUDP(data, addr)
+		if err != nil {
+			log.Printf("Error sending operator result to %s: %v", node.Hostname, err)
+		}
+	}
+}
+
+// TODO external triggering of operator execution
+// TODO operator result handling
