@@ -48,3 +48,4 @@ go.work.sum
 
 # env file
 .env
+gocluster-manager

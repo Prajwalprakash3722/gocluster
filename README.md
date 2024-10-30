@@ -52,26 +52,33 @@ make linux
 ```
 
 2. **Configuration**
-Create `cluster.conf`:
+Create `cluster.yaml`:
 ```conf
-[cluster]
-name = mycluster
-discovery_port = 7946
+# Cluster configuration
+cluster:
+  name: mycluster
+  discovery_port: 7946
+  bind_address: 0.0.0.0
+  web_address: 0.0.0.0:8080
+  enable_operator: true
 
-[nodes]
-node001 = "node001:7946"
-node002 = "node002:7946"
-node003 = "node003:7946"
+# Node definitions
+nodes:
+  node001: node001:7946
+  node002: node002:7946
+  node003: node003:7946
+plugins:
+  - aerospike-config
 ```
 
 3. **Run the Agent**
 ```bash
-./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946
+./agent -c cluster.conf
 ```
 
 4. **Enable Web Interface**
 ```bash
-./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946 -web :8080
+./agent -c cluster.conf
 ```
 Access at `http://localhost:8080`
 
@@ -124,12 +131,14 @@ Cluster nodes:
 ├── Makefile
 ├── README.md
 ├── agent
-├── cluster.conf
+├── cluster.yaml
 ├── cmd
 │   └── agent
 │       └── main.go
 ├── docker-compose.yml
 ├── go.mod
+├── go.sum
+├── gocluster-manager
 └── internal
     ├── cluster
     │   ├── manager.go
@@ -148,7 +157,7 @@ Cluster nodes:
         └── templates
             └── index.html
 
-11 directories, 18 files
+11 directories, 20 files
 ```
 
 ## 🛣️ Roadmap (Highly dependent on my mood and time availability)
