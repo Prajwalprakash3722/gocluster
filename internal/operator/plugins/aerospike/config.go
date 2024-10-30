@@ -144,91 +144,91 @@ func (n *ConfigNode) ToString(indent string) string {
 
 // NamespaceConfig represents the configuration for a new namespace
 type NamespaceConfig struct {
-    Name                 string
-    MemorySize          string
-    ReplicationFactor   int
-    DefaultTTL          int
-    HighWaterDiskPct    int
-    HighWaterMemoryPct  int
-    StopWritesPct       int
-    NsupPeriod          int
-    StorageEngine       string
-    DataFile            string
-    FileSize            string
-    DataInMemory        bool
-    WriteBlockSize      string
-    DefragLwmPct        int
-    DefragStartupMin    int
+	Name               string
+	MemorySize         string
+	ReplicationFactor  int
+	DefaultTTL         int
+	HighWaterDiskPct   int
+	HighWaterMemoryPct int
+	StopWritesPct      int
+	NsupPeriod         int
+	StorageEngine      string
+	DataFile           string
+	FileSize           string
+	DataInMemory       bool
+	WriteBlockSize     string
+	DefragLwmPct       int
+	DefragStartupMin   int
 }
 
 // DefaultNamespaceConfig returns a default configuration for a new namespace
 func DefaultNamespaceConfig(name string) NamespaceConfig {
-    return NamespaceConfig{
-        Name:               name,
-        MemorySize:        "1G",
-        ReplicationFactor: 2,
-        DefaultTTL:        0,
-        HighWaterDiskPct:  70,
-        HighWaterMemoryPct: 70,
-        StopWritesPct:     90,
-        NsupPeriod:        120,
-        StorageEngine:     "device",
-        DataFile:          fmt.Sprintf("/var/lib/aerospike/%s.dat", name),
-        FileSize:          "2G",
-        DataInMemory:      true,
-        WriteBlockSize:    "128K",
-        DefragLwmPct:      50,
-        DefragStartupMin:  10,
-    }
+	return NamespaceConfig{
+		Name:               name,
+		MemorySize:         "1G",
+		ReplicationFactor:  2,
+		DefaultTTL:         0,
+		HighWaterDiskPct:   70,
+		HighWaterMemoryPct: 70,
+		StopWritesPct:      90,
+		NsupPeriod:         120,
+		StorageEngine:      "device",
+		DataFile:           fmt.Sprintf("/var/lib/aerospike/%s.dat", name),
+		FileSize:           "2G",
+		DataInMemory:       true,
+		WriteBlockSize:     "128K",
+		DefragLwmPct:       50,
+		DefragStartupMin:   10,
+	}
 }
 
 // AddNamespace adds a new namespace to the Aerospike configuration
 func (o *AerospikeOperator) AddNamespace(ctx context.Context, config NamespaceConfig) error {
-    // Read and parse current configuration
-    currentConfig, err := ParseConfig(o.confPath)
-    if err != nil {
-        return fmt.Errorf("failed to parse config: %v", err)
-    }
+	// Read and parse current configuration
+	currentConfig, err := ParseConfig(o.confPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse config: %v", err)
+	}
 
-    // Check if namespace already exists
-    if ns := currentConfig.GetNamespace(config.Name); ns != nil {
-        return fmt.Errorf("namespace %s already exists", config.Name)
-    }
+	// Check if namespace already exists
+	if ns := currentConfig.GetNamespace(config.Name); ns != nil {
+		return fmt.Errorf("namespace %s already exists", config.Name)
+	}
 
-    // Create backup before modification
-    if err := o.createBackup(); err != nil {
-        return fmt.Errorf("failed to create backup: %v", err)
-    }
+	// Create backup before modification
+	if err := o.createBackup(); err != nil {
+		return fmt.Errorf("failed to create backup: %v", err)
+	}
 
-    // Read the current config file content
-    content, err := os.ReadFile(o.confPath)
-    if err != nil {
-        return fmt.Errorf("failed to read config file: %v", err)
-    }
+	// Read the current config file content
+	content, err := os.ReadFile(o.confPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %v", err)
+	}
 
-    // Generate namespace configuration
-    nsConfig := generateNamespaceConfig(config)
+	// Generate namespace configuration
+	nsConfig := generateNamespaceConfig(config)
 
-    // Append the new namespace to the file
-    newContent := append(content, []byte("\n"+nsConfig)...)
+	// Append the new namespace to the file
+	newContent := append(content, []byte("\n"+nsConfig)...)
 
-    // Write the updated configuration
-    err = os.WriteFile(o.confPath, newContent, 0644)
-    if err != nil {
-        // Attempt rollback if write fails
-        if rbErr := o.Rollback(ctx); rbErr != nil {
-            return fmt.Errorf("failed to write config: %v, rollback failed: %v", err, rbErr)
-        }
-        return fmt.Errorf("failed to write config and rolled back: %v", err)
-    }
+	// Write the updated configuration
+	err = os.WriteFile(o.confPath, newContent, 0644)
+	if err != nil {
+		// Attempt rollback if write fails
+		if rbErr := o.Rollback(ctx); rbErr != nil {
+			return fmt.Errorf("failed to write config: %v, rollback failed: %v", err, rbErr)
+		}
+		return fmt.Errorf("failed to write config and rolled back: %v", err)
+	}
 
-    fmt.Printf("Successfully added namespace '%s' to configuration\n", config.Name)
-    return nil
+	fmt.Printf("Successfully added namespace '%s' to configuration\n", config.Name)
+	return nil
 }
 
 // generateNamespaceConfig creates the namespace configuration string
 func generateNamespaceConfig(config NamespaceConfig) string {
-    return fmt.Sprintf(`namespace %s {
+	return fmt.Sprintf(`namespace %s {
         enable-xdr false
         memory-size %s
         replication-factor %d
@@ -246,20 +246,20 @@ func generateNamespaceConfig(config NamespaceConfig) string {
                 defrag-startup-minimum %d
         }
 }`,
-        config.Name,
-        config.MemorySize,
-        config.ReplicationFactor,
-        config.DefaultTTL,
-        config.HighWaterDiskPct,
-        config.HighWaterMemoryPct,
-        config.StopWritesPct,
-        config.NsupPeriod,
-        config.StorageEngine,
-        config.DataFile,
-        config.FileSize,
-        config.DataInMemory,
-        config.WriteBlockSize,
-        config.DefragLwmPct,
-        config.DefragStartupMin,
-    )
+		config.Name,
+		config.MemorySize,
+		config.ReplicationFactor,
+		config.DefaultTTL,
+		config.HighWaterDiskPct,
+		config.HighWaterMemoryPct,
+		config.StopWritesPct,
+		config.NsupPeriod,
+		config.StorageEngine,
+		config.DataFile,
+		config.FileSize,
+		config.DataInMemory,
+		config.WriteBlockSize,
+		config.DefragLwmPct,
+		config.DefragStartupMin,
+	)
 }

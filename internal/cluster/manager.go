@@ -396,7 +396,7 @@ func (m *Manager) GetLeaderID() string {
 }
 
 func (m *Manager) GetClusterName() string {
-	return m.cfg.ClusterName
+	return m.cfg.Cluster.Name
 }
 
 func (m *Manager) RegisterOperator(op operator.Operator) error {

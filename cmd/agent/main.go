@@ -2,83 +2,48 @@ package main
 
 import (
 	"agent/internal/cluster"
+	"agent/internal/config"
 	aerospike_operator "agent/internal/operator/plugins/aerospike"
 	"agent/internal/web"
 	"context"
-	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
+
+	"github.com/spf13/cobra"
 )
 
-// OperatorConfig holds configuration for operators
-type OperatorConfig struct {
-	Enabled bool
-}
+func initializePlugins(manager *cluster.Manager, plugins []string) error {
+	log.Printf("Initializing plugins: %v", plugins)
 
-func main() {
-	var opts cluster.ManagerOptions
-	var webAddr string
-	var operatorCfg OperatorConfig
-
-	// Cluster flags
-	// this is not nice, need to refactor this using cobra or similar
-	flag.StringVar(&opts.ConfigPath, "config", "cluster.conf", "Path to configuration file")
-	flag.StringVar(&opts.BindAddress, "bind-address", "0.0.0.0", "Address to bind to")
-	flag.IntVar(&opts.BindPort, "port", 7946, "Port to listen on")
-	flag.StringVar(&webAddr, "web", "8080", "Web UI address (e.g., :8080)")
-
-	// Operator flags
-	flag.BoolVar(&operatorCfg.Enabled, "enable-operators", false, "Enable operator plugins")
-
-	flag.Parse()
-
-	// Create cluster manager
-	manager, err := cluster.NewManager(opts)
-	if err != nil {
-		log.Fatalf("Failed to create cluster manager: %v", err)
+	if len(plugins) == 0 {
+		log.Printf("No plugins configured")
+		return nil
 	}
 
-	// Initialize operators if enabled (enabling Aerospike operator for now, usually this would be a plugin system)
-	if operatorCfg.Enabled {
-		if err := initializeAerospikeOperator(manager); err != nil {
-			log.Printf("Warning: Failed to initialize operators: %v", err)
-		}
-	}
+	for _, plugin := range plugins {
+		log.Printf("Attempting to initialize plugin: %s", plugin)
 
-	// Start cluster manager
-	if err := manager.Start(); err != nil {
-		log.Fatalf("Failed to start cluster manager: %v", err)
-	}
-
-	// Start web server if enabled
-	if webAddr != "" {
-		handler, err := web.NewHandler(manager)
-		if err != nil {
-			log.Fatalf("Failed to create web handler: %v", err)
-		}
-
-		go func() {
-			log.Printf("Starting web UI at http://%s", webAddr)
-			if err := http.ListenAndServe(webAddr, handler); err != nil {
-				log.Printf("Web server error: %v", err)
+		switch strings.TrimSpace(strings.ToLower(plugin)) {
+		case "aerospike-config":
+			log.Printf("Initializing Aerospike operator plugin")
+			if err := initializeAerospikeOperator(manager); err != nil {
+				log.Printf("Failed to initialize aerospike operator: %v", err)
+				return fmt.Errorf("failed to initialize aerospike operator: %v", err)
 			}
-		}()
+			log.Printf("Successfully initialized Aerospike operator plugin")
+		default:
+			log.Printf("Warning: Unknown plugin %s", plugin)
+		}
 	}
-
-	// Wait for shutdown signal
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	<-signals
-
-	log.Println("Shutting down...")
-	manager.Stop()
+	return nil
 }
 
-// hardcoding the initialization of the Aerospike operator for now
-// this would be done dynamically in a real system
 func initializeAerospikeOperator(manager *cluster.Manager) error {
 	aeroOp := aerospike_operator.New()
 	err := aeroOp.Init(map[string]interface{}{
@@ -96,7 +61,7 @@ func initializeAerospikeOperator(manager *cluster.Manager) error {
 	params := map[string]interface{}{
 		"operation": "add_namespace",
 		"namespace": map[string]interface{}{
-			"name": "checkout",
+			"name": "testing_in_stg",
 		},
 	}
 
@@ -112,4 +77,110 @@ func initializeAerospikeOperator(manager *cluster.Manager) error {
 	}
 
 	return nil
+}
+
+func runServer(cmd *cobra.Command, args []string) error {
+	configPath, _ := cmd.Flags().GetString("config")
+	isDaemon, _ := cmd.Flags().GetBool("daemon")
+
+	log.Printf("Loading configuration from: %s", configPath)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	log.Printf("Loaded configuration: cluster=%s, operators=%v", cfg.Cluster.Name, cfg.Cluster.EnableOperators)
+
+	opts := cluster.ManagerOptions{
+		ConfigPath:  configPath,
+		BindAddress: cfg.Cluster.BindAddress,
+		BindPort:    cfg.Cluster.DiscoveryPort,
+	}
+
+	log.Printf("Creating cluster manager with options: %+v", opts)
+	manager, err := cluster.NewManager(opts)
+	if err != nil {
+		return fmt.Errorf("failed to create cluster manager: %v", err)
+	}
+
+	if cfg.Cluster.EnableOperators {
+		log.Printf("Operators enabled, initializing plugins")
+		if err := initializePlugins(manager, cfg.Plugins); err != nil {
+			log.Printf("Warning: Failed to initialize plugins: %v", err)
+			return fmt.Errorf("failed to initialize plugins: %v", err)
+		}
+	} else {
+		log.Printf("Operators disabled, skipping plugin initialization")
+	}
+
+	log.Printf("Starting cluster manager")
+	if err := manager.Start(); err != nil {
+		return fmt.Errorf("failed to start cluster manager: %v", err)
+	}
+
+	if cfg.Cluster.WebAddress != "" {
+		log.Printf("Initializing web handler")
+		handler, err := web.NewHandler(manager)
+		if err != nil {
+			return fmt.Errorf("failed to create web handler: %v", err)
+		}
+
+		go func() {
+			log.Printf("Starting web UI at http://%s", cfg.Cluster.WebAddress)
+			if err := http.ListenAndServe(cfg.Cluster.WebAddress, handler); err != nil {
+				log.Printf("Web server error: %v", err)
+			}
+		}()
+	}
+
+	if isDaemon {
+		log.Printf("Daemonizing process")
+		if err := daemon(); err != nil {
+			return fmt.Errorf("failed to daemonize: %v", err)
+		}
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	log.Printf("Waiting for shutdown signal")
+	<-signals
+
+	log.Println("Shutting down...")
+	manager.Stop()
+	return nil
+}
+
+func daemon() error {
+	if os.Getppid() == 1 {
+		return nil
+	}
+
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--daemon" || args[i] == "-d" {
+			args = append(args[:i], args[i+1:]...)
+			break
+		}
+	}
+
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Start()
+	os.Exit(0)
+	return nil
+}
+
+func main() {
+	var rootCmd = &cobra.Command{
+		Use:   "agent",
+		Short: "Cluster agent with plugin support",
+		RunE:  runServer,
+	}
+
+	rootCmd.PersistentFlags().StringP("config", "c", "cluster.conf", "Path to configuration file")
+	rootCmd.PersistentFlags().BoolP("daemon", "d", false, "Run in daemon mode")
+
+	ctx := context.Background()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		log.Fatalf("Failed to execute: %v", err)
+	}
 }
