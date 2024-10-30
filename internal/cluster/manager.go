@@ -434,24 +434,50 @@ func (m *Manager) ExecuteOperator(ctx context.Context, name string, params map[s
 		return fmt.Errorf("operator %s not found", name)
 	}
 
-	// check if operation parameter is present in the operator
-	if _, exists := params["operation"]; !exists {
+	// Check if operation parameter exists
+	operation, exists := params["operation"].(string)
+	if !exists {
 		return fmt.Errorf("operation parameter is missing")
 	}
 
 	// Get operator info for validation
 	info := op.Info()
 
-	// Validate required parameters
-	for _, param := range info.Parameters {
-		if param.Required {
-			if _, exists := params[param.Name]; !exists {
-				return fmt.Errorf("required parameter %s is missing", param.Name)
-			}
+	// Check if operation exists in schema
+	opSchema, exists := info.Operations[operation]
+	if !exists {
+		return fmt.Errorf("operation %s not found for operator %s", operation, name)
+	}
+
+	// Extract the nested parameters
+	var operationParams map[string]interface{}
+	if p, ok := params["params"].(map[string]interface{}); ok {
+		operationParams = p
+	} else {
+		operationParams = make(map[string]interface{})
+	}
+
+	// Extract config parameters
+	var configParams map[string]interface{}
+	if c, ok := params["config"].(map[string]interface{}); ok {
+		configParams = c
+	} else {
+		configParams = make(map[string]interface{})
+	}
+
+	// Validate operation parameters
+	if err := validateParams(operationParams, opSchema.Parameters); err != nil {
+		return fmt.Errorf("parameter validation failed: %w", err)
+	}
+
+	// Validate config parameters if schema has config requirements
+	if opSchema.Config != nil {
+		if err := validateParams(configParams, opSchema.Config); err != nil {
+			return fmt.Errorf("config validation failed: %w", err)
 		}
 	}
 
-	// Execute the operator
+	// Execute the operator with the original params to maintain structure
 	if err := op.Execute(ctx, params); err != nil {
 		return fmt.Errorf("operator execution failed: %w", err)
 	}
@@ -513,6 +539,21 @@ func (m *Manager) BroadcastOperatorResult(operatorName string, result map[string
 			log.Printf("Error sending operator result to %s: %v", node.Hostname, err)
 		}
 	}
+}
+
+func validateParams(params map[string]interface{}, schema map[string]operator.ParamSchema) error {
+	for name, paramSchema := range schema {
+		if paramSchema.Required {
+			value, exists := params[name]
+			if !exists {
+				return fmt.Errorf("required parameter %s is missing", name)
+			}
+			if value == nil {
+				return fmt.Errorf("required parameter %s cannot be nil", name)
+			}
+		}
+	}
+	return nil
 }
 
 // TODO external triggering of operator execution

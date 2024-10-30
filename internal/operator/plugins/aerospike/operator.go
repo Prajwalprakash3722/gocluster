@@ -1,5 +1,3 @@
-// FYI some parts are generated from chatGpt, IDK anything about aerospike configuration,
-// just a simple example of how operators can be developed and used
 package aerospike_operator
 
 import (
@@ -11,7 +9,6 @@ import (
 	"time"
 )
 
-// AerospikeOperator handles Aerospike configuration operations
 type AerospikeOperator struct {
 	confPath   string
 	config     *ConfigNode
@@ -19,14 +16,7 @@ type AerospikeOperator struct {
 	lastBackup string
 }
 
-// OperatorConfig defines the configuration for the Aerospike operator
-type OperatorConfig struct {
-	ConfigPath string `json:"config_path"`
-	Validate   bool   `json:"validate"`
-}
-
-// New creates a new Aerospike configuration operator
-func New() *AerospikeOperator {
+func New() operator.Operator {
 	return &AerospikeOperator{}
 }
 
@@ -38,22 +28,122 @@ func (o *AerospikeOperator) Name() string {
 // Info returns information about the operator
 func (o *AerospikeOperator) Info() operator.OperatorInfo {
 	return operator.OperatorInfo{
-		Name:        "aerospike-config",
+		Name:        "aerospike",
 		Version:     "1.0.0",
-		Description: "Reads and manages Aerospike configuration files",
-		Parameters: []operator.ParameterInfo{
-			{
-				Name:        "config_path",
-				Type:        "string",
-				Required:    true,
-				Description: "Path to Aerospike configuration file",
+		Description: "Aerospike configuration and management operator",
+		Author:      "prajwal.p",
+		Operations: map[string]operator.OperationSchema{
+			"backup": {
+				Description: "Backup Aerospike namespace data",
+				Parameters: map[string]operator.ParamSchema{
+					"retention": {
+						Type:        "string",
+						Required:    true,
+						Default:     "7d",
+						Description: "Backup retention period (e.g., 7d, 30d)",
+					},
+					"compress": {
+						Type:        "bool",
+						Required:    false,
+						Default:     true,
+						Description: "Enable backup compression",
+					},
+				},
+				Config: map[string]operator.ParamSchema{
+					"path": {
+						Type:        "string",
+						Required:    false,
+						Default:     "/etc/aerospike/config.conf",
+						Description: "Configuration file path",
+					},
+				},
 			},
-			{
-				Name:        "validate",
-				Type:        "bool",
-				Required:    false,
-				Description: "Validate configuration after reading",
-				Default:     "true",
+			"add_namespace": {
+				Description: "Add new namespace to Aerospike configuration",
+				Parameters: map[string]operator.ParamSchema{
+					"name": {
+						Type:        "string",
+						Required:    true,
+						Description: "Namespace name",
+					},
+					"memory_size": {
+						Type:        "string",
+						Required:    false,
+						Default:     "1G",
+						Description: "Memory size for namespace",
+					},
+					"replication_factor": {
+						Type:        "int",
+						Required:    false,
+						Default:     2,
+						Description: "Replication factor",
+					},
+					"default_ttl": {
+						Type:        "int",
+						Required:    false,
+						Default:     0,
+						Description: "Default TTL in seconds (0 = never expire)",
+					},
+					"high_water_disk_pct": {
+						Type:        "int",
+						Required:    false,
+						Default:     70,
+						Description: "High water disk percentage",
+					},
+					"high_water_memory_pct": {
+						Type:        "int",
+						Required:    false,
+						Default:     70,
+						Description: "High water memory percentage",
+					},
+					"stop_writes_pct": {
+						Type:        "int",
+						Required:    false,
+						Default:     90,
+						Description: "Stop writes percentage threshold",
+					},
+					"storage_engine": {
+						Type:        "string",
+						Required:    false,
+						Default:     "device",
+						Description: "Storage engine type (memory|device)",
+					},
+					"data_in_memory": {
+						Type:        "bool",
+						Required:    false,
+						Default:     true,
+						Description: "Keep data in memory",
+					},
+				},
+				Config: map[string]operator.ParamSchema{
+					"config_path": {
+						Type:        "string",
+						Required:    true,
+						Description: "Path to Aerospike configuration file",
+					},
+					"validate": {
+						Type:        "bool",
+						Required:    false,
+						Default:     true,
+						Description: "Validate configuration after changes",
+					},
+				},
+			},
+			"restore": {
+				Description: "Restore namespace from backup",
+				Parameters: map[string]operator.ParamSchema{
+					"backup_file": {
+						Type:        "string",
+						Required:    true,
+						Description: "Path to backup file",
+					},
+					"force": {
+						Type:        "bool",
+						Required:    false,
+						Default:     false,
+						Description: "Force restore even if namespace exists",
+					},
+				},
 			},
 		},
 	}
@@ -94,16 +184,15 @@ func (o *AerospikeOperator) Execute(ctx context.Context, params map[string]inter
 			return fmt.Errorf("failed to parse config: %v", err)
 		}
 		o.config = config
-		params["config"] = config
 
 		// Check operation type
 		if opType, ok := params["operation"].(string); ok {
 			switch opType {
 			case "add_namespace":
 				// Extract namespace configuration from params
-				nsParams, ok := params["namespace"].(map[string]interface{})
+				nsParams, ok := params["params"].(map[string]interface{})
 				if !ok {
-					return fmt.Errorf("namespace parameters not provided")
+					return fmt.Errorf("parameters not provided")
 				}
 
 				// Create namespace configuration
@@ -125,6 +214,13 @@ func (o *AerospikeOperator) Execute(ctx context.Context, params map[string]inter
 					DefragStartupMin:   getIntParam(nsParams, "defrag_startup_min", 10),
 				}
 
+				configParams, ok := params["config"].(map[string]interface{})
+				if !ok {
+					return fmt.Errorf("config parameters not provided")
+				}
+
+				o.confPath = getStringParam(configParams, "config_path", "/etc/aerospike/aerospike.conf")
+
 				return o.AddNamespace(ctx, nsConfig)
 
 			default:
@@ -133,13 +229,15 @@ func (o *AerospikeOperator) Execute(ctx context.Context, params map[string]inter
 		}
 
 		// If validate is requested
-		if validate, ok := params["validate"].(bool); ok && validate {
-			if err := o.validateConfig(); err != nil {
-				// Trigger rollback if validation fails
-				if rbErr := o.Rollback(ctx); rbErr != nil {
-					return fmt.Errorf("validation failed: %v, rollback failed: %v", err, rbErr)
+		if configParams, ok := params["config"].(map[string]interface{}); ok {
+			if validate, ok := configParams["validate"].(bool); ok && validate {
+				if err := o.validateConfig(); err != nil {
+					// Trigger rollback if validation fails
+					if rbErr := o.Rollback(ctx); rbErr != nil {
+						return fmt.Errorf("validation failed: %v, rollback failed: %v", err, rbErr)
+					}
+					return fmt.Errorf("validation failed and rolled back: %v", err)
 				}
-				return fmt.Errorf("validation failed and rolled back: %v", err)
 			}
 		}
 

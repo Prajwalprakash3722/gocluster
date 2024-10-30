@@ -62,6 +62,7 @@ func (h *Handler) SetupRoutes(app *fiber.App) {
 	api.Get("/node", h.handleAPINode)
 	api.Get("/operator/list", h.handleAPIListOperators)
 	api.Post("/operator/trigger/:name", h.handleAPIOperator)
+	api.Get("/operator/schema/:name", h.handleAPIOperatorSchema) // Add this line
 
 	// Web UI routes
 	app.Get("/", h.handleIndex)
@@ -184,34 +185,34 @@ func (h *Handler) handleIndex(c *fiber.Ctx) error {
 }
 
 func (h *Handler) handleEvents(c *fiber.Ctx) error {
-    c.Set("Content-Type", "text/event-stream")
-    c.Set("Cache-Control", "no-cache")
-    c.Set("Connection", "keep-alive")
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
 
-    statusChan := make(chan StatusUpdate)
-    h.clientsMux.Lock()
-    h.clients[statusChan] = true
-    h.clientsMux.Unlock()
+	statusChan := make(chan StatusUpdate)
+	h.clientsMux.Lock()
+	h.clients[statusChan] = true
+	h.clientsMux.Unlock()
 
-    defer func() {
-        h.clientsMux.Lock()
-        delete(h.clients, statusChan)
-        h.clientsMux.Unlock()
-        close(statusChan)
-    }()
+	defer func() {
+		h.clientsMux.Lock()
+		delete(h.clients, statusChan)
+		h.clientsMux.Unlock()
+		close(statusChan)
+	}()
 
-    for {
-        select {
-        case status := <-statusChan:
-            data, _ := json.Marshal(status)
-            c.Write([]byte(fmt.Sprintf("data: %s\n\n", data)))
-            if flusher, ok := c.Response().BodyWriter().(http.Flusher); ok {
-                flusher.Flush()
-            }
-        case <-c.Context().Done():
-            return nil
-        }
-    }
+	for {
+		select {
+		case status := <-statusChan:
+			data, _ := json.Marshal(status)
+			c.Write([]byte(fmt.Sprintf("data: %s\n\n", data)))
+			if flusher, ok := c.Response().BodyWriter().(http.Flusher); ok {
+				flusher.Flush()
+			}
+		case <-c.Context().Done():
+			return nil
+		}
+	}
 }
 
 func (h *Handler) broadcastStatus() {
@@ -275,5 +276,30 @@ func (h *Handler) handleAPIOperator(c *fiber.Ctx) error {
 		Data: map[string]string{
 			"message": fmt.Sprintf("operator %s executed successfully", operatorName),
 		},
+	})
+}
+
+func (h *Handler) handleAPIOperatorSchema(c *fiber.Ctx) error {
+	operatorName := c.Params("name")
+	if operatorName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error:   "operator name is required",
+		})
+	}
+
+	operator, err := h.manager.GetOperator(operatorName)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(APIResponse{
+			Success: false,
+			Error:   fmt.Sprintf("operator %s not found", operatorName),
+		})
+	}
+
+	info := operator.Info()
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    info,
 	})
 }

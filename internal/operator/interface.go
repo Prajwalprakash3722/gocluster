@@ -23,15 +23,6 @@ type Operator interface {
 	Cleanup() error
 }
 
-// OperatorInfo contains metadata about an operator
-type OperatorInfo struct {
-	Name        string          // Unique name of the operator
-	Version     string          // Version of the operator
-	Description string          // Description of what the operator does
-	Author      string          // Author of the operator
-	Parameters  []ParameterInfo // List of parameters the operator accepts
-}
-
 // ParameterInfo describes a parameter that the operator accepts
 type ParameterInfo struct {
 	Name        string // Name of the parameter
@@ -39,6 +30,31 @@ type ParameterInfo struct {
 	Required    bool   // Whether the parameter is required
 	Description string // Description of what the parameter does
 	Default     string // Default value, if any
+}
+
+// OperatorInfo contains operator metadata and schema
+type OperatorInfo struct {
+	Name        string                     `json:"name"`
+	Version     string                     `json:"version"`
+	Description string                     `json:"description"`
+	Author      string                     `json:"author"`
+	Operations  map[string]OperationSchema `json:"operations"`
+}
+
+// OperationSchema describes an individual operation
+type OperationSchema struct {
+	Description string                 `json:"description"`
+	Parameters  map[string]ParamSchema `json:"parameters"`
+	Namespace   map[string]ParamSchema `json:"namespace"`
+	Config      map[string]ParamSchema `json:"config"`
+}
+
+// ParamSchema describes parameter requirements
+type ParamSchema struct {
+	Type        string      `json:"type"`
+	Required    bool        `json:"required"`
+	Default     interface{} `json:"default"`
+	Description string      `json:"description"`
 }
 
 // Status represents the current state of an operator execution
