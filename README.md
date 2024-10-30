@@ -10,128 +10,120 @@
 
 ---
 
-## 🎯 Overview
+## 📑 Overview
 
-GoCluster is a lightweight distributed cluster manager written in Go that provides automatic node discovery, leader election, and robust cluster state management. Perfect for small to medium-sized distributed systems that need simple yet effective cluster management.
+GoCluster is a lightweight distributed cluster manager written in Go that simplifies cluster management through automatic node discovery, leader election, and state management. It's designed for small to medium-sized distributed systems, featuring an extensible operator plugin system for custom cluster operations.
 
-## 🚀 Features
+## ✨ Key Features
 
-- **Automatic Node Discovery** - Node discovery using UDP
-- **Smart Leader Election** - Simple and efficient leader election based on node ID
-- **Health Monitoring** - Continuous health checks with automatic failover
-- **State Management** - Clean and consistent cluster state management
-- **Simple Configuration** - Easy setup using standard configuration files
-- **Web Interface** - Real-time cluster monitoring with automatic updates and interactive displays (see below for setup)
+- **Node Management**
+  - Node discovery via UDP
+  - Smart leader election based on node ID
+  - Real-time health monitoring
+  - Automatic failover handling
 
+- **Operator System**
+  - Plugin-based architecture for custom operations
+  - Extensible framework for cluster tasks
+  - Web interface integration
 
-## 🛠️ Getting Started
+- **Monitoring**
+  - Real-time web interface
+  - Cluster state visualization
+  - Node health tracking
+  - Operator status monitoring
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Go 1.21 or higher
-- Linux/Unix environment, If you have windows, throw it out :)
+```bash
+- Go 1.21+
+- Linux/Unix environment, if you have windows, please do a favor to yourself and throw it away:)
+```
 
-### Installation
+### Quick Start
 
+1. **Installation**
 ```bash
 git clone https://github.com/Prajwalprakash3722/gocluster
 cd gocluster
 make linux
 ```
 
-### Configuration
-
-1. Create your `cluster.conf` file:
-
+2. **Configuration**
+Create `cluster.conf`:
 ```conf
 [cluster]
-name = proxy
+name = mycluster
 discovery_port = 7946
 
 [nodes]
-node001 = "node001.devcoffee.me:7946"
-node002 = "node002.devcoffee.me:7946"
-node003 = "node003.devcoffee.me:7946"
+node001 = "node001:7946"
+node002 = "node002:7946"
+node003 = "node003:7946"
 ```
 
-2. Run the agent:
-
+3. **Run the Agent**
 ```bash
 ./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946
 ```
-3. Enabling the Web Interface
-To view the real-time cluster monitoring interface:
 
-Start the agent with the web server enabled by adding the -web flag:
-
+4. **Enable Web Interface**
 ```bash
-./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946 -web 0.0.0.0:8080
+./agent -config cluster.conf -bind-address 0.0.0.0 -port 7946 -web :8080
 ```
-Access the web UI at http://node001:8080. (The interface provides an interactive overview of your cluster, including each node’s status, leader election details, and last seen timestamps.)
+Access at `http://localhost:8080`
+
+## 🔌 Operator System
+
+GoCluster features an rich operator plugin system for extending cluster functionality. Operators are modular components that can perform specific tasks across your cluster.
+
+### Creating Custom Operators
+
+All operators must implement the following interface:
+
+```go
+type Operator interface {
+    Name() string
+    Init(config map[string]interface{}) error
+    Execute(ctx context.Context, params map[string]interface{}) error
+    Rollback(ctx context.Context) error
+    Cleanup() error
+}
+```
+### Best Practices
+- Implement proper error handling
+- Use context for cancellation
+- Provide rollback capabilities, very important incase of failure **(Hope is not a strategy)**.
+- Include validation checks
+- Maintain idempotency
+
+The project includes an Aerospike operator as a reference implementation. This operator manages Aerospike database configuration across your cluster.
 
 
-## 📊 Sample Outputs
+Place your operator in `internal/operator/plugins/youroperatorname/`
 
-### Initial Discovery
+## 📊 Cluster Status Example
+
 ```text
 Cluster Status:
 Local node: node001 (State: leader)
 Leader: node001
 Cluster nodes:
-- node003.devcoffee.me (State: follower, Last seen: 1s)
-- node004.devcoffee.me (State: follower, Last seen: 1s)
-- node002.devcoffee.me (State: follower, Last seen: 1s)
+- node002 (State: follower, Last seen: 1s)
+- node003 (State: follower, Last seen: 1s)
 ```
 
-### Failover Scenario
-```text
-Cluster Status:
-Local node: node003 (State: follower)
-Leader: node001
-Cluster nodes:
-- node004.devcoffee.me (State: follower, Last seen: 0s)
-- node001.devcoffee.me (State: leader, Last seen: 6s)
-- node002.devcoffee.me (State: follower, Last seen: 0s)
+## 📁 Project Structure
 
-2024/10/29 12:35:52 Node timeout: node001
-2024/10/29 12:35:52 Leader node001 timed out, initiating new election
-2024/10/29 12:35:52 Following new leader: node002
 ```
-
-### Auto-Discovery
-```text
-2024/10/29 12:36:50 New node discovered: node001
-2024/10/29 12:36:50 Following new leader: node001
-2024/10/29 12:36:50 Updated node node004 state to follower
-2024/10/29 12:36:50 Updated node node002 state to follower
-```
-
-## 🗺️ Future Plans (mainly dependent on my interest)
-
-- [ ] Distributed task execution system
-- [ ] Secure communication (TLS/mTLS)
-- [ ] Web-based cluster management UI
-- [ ] Custom operation framework
-- [ ] Configuration replication
-- [ ] Load balancing capabilities
-- [ ] Metrics and monitoring
-- [ ] Multi-region support
-- [ ] Custom plugin system
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🌴 Project Tree
-```bash
 .
 ├── Dockerfile
+├── LICENSE
 ├── Makefile
 ├── README.md
+├── agent
 ├── cluster.conf
 ├── cmd
 │   └── agent
@@ -142,14 +134,42 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
     ├── cluster
     │   ├── manager.go
     │   └── node.go
-    └── config
-        └── config.go
+    ├── config
+    │   └── config.go
+    ├── operator
+    │   ├── interface.go
+    │   ├── manager.go
+    │   └── plugins
+    │       └── aerospike
+    │           ├── config.go
+    │           └── operator.go
+    └── web
+        ├── handler.go
+        └── templates
+            └── index.html
 
-6 directories, 10 files
+11 directories, 18 files
 ```
 
----
+## 🛣️ Roadmap (Highly dependent on my mood and time availability)
+
+- [x] Custom operation framework
+- [ ] Distributed task execution system
+- [ ] Secure communication (TLS/mTLS)
+- [ ] Web-based cluster management UI
+- [ ] Configuration replication
+- [ ] Load balancing capabilities
+- [ ] Metrics and monitoring
+- [ ] Multi-region support
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+## 📝 License
+
+MIT License - see [LICENSE](LICENSE) for details.
 
 <div align="center">
-Made with ❤️ by <a href="https://github.com/Prajwalprakash3722">@prajwal.p</a>
+Crafted with ❤️ by <a href="https://github.com/Prajwalprakash3722">@prajwal.p</a>
 </div>
