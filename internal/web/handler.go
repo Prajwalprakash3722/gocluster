@@ -2,6 +2,7 @@ package web
 
 import (
 	"agent/internal/cluster"
+	"agent/internal/operator"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -17,10 +18,11 @@ import (
 var templateFS embed.FS
 
 type Handler struct {
-	manager    *cluster.Manager
-	clients    map[chan StatusUpdate]bool
-	clientsMux sync.RWMutex
-	templates  *template.Template
+	manager         *cluster.Manager
+	operatorManager *operator.OperatorManager
+	clients         map[chan StatusUpdate]bool
+	clientsMux      sync.RWMutex
+	templates       *template.Template
 }
 
 type StatusUpdate struct {
@@ -37,16 +39,17 @@ type APIResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-func NewHandler(manager *cluster.Manager) (*Handler, error) {
+func NewHandler(manager *cluster.Manager, operatorManager *operator.OperatorManager) (*Handler, error) {
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse templates: %w", err)
 	}
 
 	h := &Handler{
-		manager:   manager,
-		clients:   make(map[chan StatusUpdate]bool),
-		templates: tmpl,
+		manager:         manager,
+		clients:         make(map[chan StatusUpdate]bool),
+		templates:       tmpl,
+		operatorManager: operatorManager,
 	}
 	go h.broadcastStatus()
 	return h, nil
@@ -161,7 +164,15 @@ func (h *Handler) handleAPINode(c *fiber.Ctx) error {
 }
 
 func (h *Handler) handleAPIListOperators(c *fiber.Ctx) error {
-	operators := h.manager.ListOperators()
+
+	if h.operatorManager == nil {
+		return c.JSON(APIResponse{
+			Success: false,
+			Error:   "operator manager not available, are you sure you have enabled operators?",
+		})
+	}
+
+	operators := h.operatorManager.ListOperators()
 	return c.JSON(APIResponse{
 		Success: true,
 		Data:    operators,
@@ -264,7 +275,7 @@ func (h *Handler) handleAPIOperator(c *fiber.Ctx) error {
 	}
 
 	ctx := c.Context()
-	if err := h.manager.ExecuteOperator(ctx, operatorName, params); err != nil {
+	if err := h.operatorManager.ExecuteOperator(ctx, operatorName, params); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
 			Success: false,
 			Error:   err.Error(),
@@ -288,7 +299,7 @@ func (h *Handler) handleAPIOperatorSchema(c *fiber.Ctx) error {
 		})
 	}
 
-	operator, err := h.manager.GetOperator(operatorName)
+	operator, err := h.operatorManager.GetOperator(operatorName)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(APIResponse{
 			Success: false,

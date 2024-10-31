@@ -3,6 +3,7 @@ package main
 import (
 	"agent/internal/cluster"
 	"agent/internal/config"
+	"agent/internal/operator"
 	aerospike_operator "agent/internal/operator/plugins/aerospike"
 	"agent/internal/web"
 	"context"
@@ -18,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func initializePlugins(manager *cluster.Manager, plugins []string) error {
+func initializePlugins(operatorManager *operator.OperatorManager, plugins []string) error {
 	log.Printf("Initializing plugins: %v", plugins)
 
 	if len(plugins) == 0 {
@@ -32,7 +33,7 @@ func initializePlugins(manager *cluster.Manager, plugins []string) error {
 		switch strings.TrimSpace(strings.ToLower(plugin)) {
 		case "aerospike-config":
 			log.Printf("Initializing Aerospike operator plugin")
-			if err := initializeAerospikeOperator(manager); err != nil {
+			if err := initializeAerospikeOperator(operatorManager); err != nil {
 				log.Printf("Failed to initialize aerospike operator: %v", err)
 				return fmt.Errorf("failed to initialize aerospike operator: %v", err)
 			}
@@ -44,7 +45,7 @@ func initializePlugins(manager *cluster.Manager, plugins []string) error {
 	return nil
 }
 
-func initializeAerospikeOperator(manager *cluster.Manager) error {
+func initializeAerospikeOperator(operatorManager *operator.OperatorManager) error {
 	aeroOp := aerospike_operator.New()
 	err := aeroOp.Init(map[string]interface{}{
 		"config_path": "/etc/aerospike/aerospike.conf",
@@ -53,7 +54,7 @@ func initializeAerospikeOperator(manager *cluster.Manager) error {
 		log.Fatalf("Failed to initialize: %v", err)
 	}
 
-	if err := manager.RegisterOperator(aeroOp); err != nil {
+	if err := operatorManager.RegisterOperator(aeroOp); err != nil {
 		return err
 	}
 	log.Printf("Registered Aerospike operator")
@@ -81,13 +82,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	log.Printf("Creating cluster manager with options: %+v", opts)
 	manager, err := cluster.NewManager(opts)
+	log.Printf("Creating operator manager")
+	operatorManager := operator.NewOperatorManager()
 	if err != nil {
 		return fmt.Errorf("failed to create cluster manager: %v", err)
 	}
 
 	if cfg.Cluster.EnableOperators {
 		log.Printf("Operators enabled, initializing plugins")
-		if err := initializePlugins(manager, cfg.Plugins); err != nil {
+		if err := initializePlugins(operatorManager, cfg.Plugins); err != nil {
 			log.Printf("Warning: Failed to initialize plugins: %v", err)
 			return fmt.Errorf("failed to initialize plugins: %v", err)
 		}
@@ -102,7 +105,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	if cfg.Cluster.WebAddress != "" {
 		log.Printf("Initializing web handler")
-		handler, err := web.NewHandler(manager)
+		handler, err := web.NewHandler(manager, operatorManager)
 		if err != nil {
 			return fmt.Errorf("failed to create web handler: %v", err)
 		}
