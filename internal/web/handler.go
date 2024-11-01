@@ -1,8 +1,10 @@
+// internal/web/handler.go
 package web
 
 import (
 	"agent/internal/cluster"
 	"agent/internal/operator"
+	"agent/internal/types"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -26,11 +28,11 @@ type Handler struct {
 }
 
 type StatusUpdate struct {
-	ClusterName string                   `json:"cluster_name"`
-	LocalNode   *cluster.Node            `json:"local_node"`
-	Leader      string                   `json:"leader"`
-	Nodes       map[string]*cluster.Node `json:"nodes"`
-	Timestamp   time.Time                `json:"timestamp"`
+	ClusterName string                 `json:"cluster_name"`
+	LocalNode   *types.Node            `json:"local_node"`
+	Leader      string                 `json:"leader"`
+	Nodes       map[string]*types.Node `json:"nodes"`
+	Timestamp   time.Time              `json:"timestamp"`
 }
 
 type APIResponse struct {
@@ -110,9 +112,26 @@ func (h *Handler) handleAPINodes(c *fiber.Ctx) error {
 }
 
 func (h *Handler) handleAPILeader(c *fiber.Ctx) error {
-	leaderID := h.manager.GetLeaderID()
 	nodes := h.manager.GetNodes()
+	nodeCount := h.manager.GetNodeCount()
+	leaderID := h.manager.GetLeaderID()
 
+	// If there's 1 nodes, then we have only one node and itself is the leader
+	if nodeCount == 1 {
+		leaderInfo := h.manager.GetLocalNode()
+		return c.JSON(APIResponse{
+			Success: true,
+			Data: map[string]interface{}{
+				"id":        leaderInfo.ID,
+				"hostname":  leaderInfo.Hostname,
+				"address":   leaderInfo.Address,
+				"port":      leaderInfo.Port,
+				"last_seen": leaderInfo.LastSeen,
+			},
+		})
+	}
+
+	// Check for explicit leader
 	if leader, exists := nodes[leaderID]; exists {
 		return c.JSON(APIResponse{
 			Success: true,
@@ -126,6 +145,7 @@ func (h *Handler) handleAPILeader(c *fiber.Ctx) error {
 		})
 	}
 
+	// No leader found and not a single node cluster
 	return c.JSON(APIResponse{
 		Success: false,
 		Error:   "no leader found",

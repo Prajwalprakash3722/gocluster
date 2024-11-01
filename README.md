@@ -1,60 +1,46 @@
-<div align="center">
+# GoCluster
 
-# 🌟 GoCluster
-
-### A Lightweight Distributed Cluster Manager in Go
+A Lightweight Distributed Cluster Manager in Go
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-</div>
-
----
-
-## 📑 Overview
+## Overview
 
 GoCluster is a lightweight distributed cluster manager written in Go that simplifies cluster management through automatic node discovery, leader election, and state management. It's designed for small to medium-sized distributed systems, featuring an extensible operator plugin system for custom cluster operations.
 
-## ✨ Key Features
+Designed for SREs in mind, GoCluster automates repetitive cluster operations that would otherwise require manual intervention across multiple nodes. Instead of logging into each node to perform operations like creating namespaces or running backups, GoCluster provides a centralized way to manage these tasks across hundreds of clusters through simple operator definitions.
+
+## Key Features
 
 - **Node Management**
-  - Node discovery via UDP
-  - Smart leader election based on node ID
-  - Real-time health monitoring
-  - Automatic failover handling
+  - Automatic node discovery via UDP
+  - Leader election based on node ID
+  - Health monitoring and failover handling
 
 - **Operator System**
-  - Plugin-based architecture for custom operations
+  - Plugin-based architecture
   - Extensible framework for cluster tasks
   - Web interface integration
 
-- **Monitoring**
-  - Real-time web interface
-  - Cluster state visualization
-  - Node health tracking
-  - Operator status monitoring
-
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-```bash
 - Go 1.21+
 - Linux/Unix environment, if you have windows, please do a favor to yourself and throw it away:)
-```
 
-### Quick Start
+### Installation
 
-1. **Installation**
 ```bash
 git clone https://github.com/Prajwalprakash3722/gocluster
 cd gocluster
 make linux
 ```
 
-2. **Configuration**
+### Configuration
+
 Create `cluster.yaml`:
-```conf
-# Cluster configuration
+```yaml
 cluster:
   name: mycluster
   discovery_port: 7946
@@ -62,67 +48,62 @@ cluster:
   web_address: 0.0.0.0:8080
   enable_operator: true
 
-# Node definitions
 nodes:
   node001: node001:7946
   node002: node002:7946
   node003: node003:7946
+
 plugins:
   - aerospike-config
 ```
 
-3. **Run the Agent**
+### Usage
+
+1. Start the agent:
 ```bash
-./agent -c cluster.conf
+./agent -c cluster.yaml
 ```
 
-4. **Enable Web Interface**
+2. Access the web interface at `http://localhost:8080`, or use the CLI tool to manage the cluster. (web doesn't have any functionality to interact with the cluster yet, it can only show the status of the cluster and nodes)
+
+### CLI Tool
+
+The cluster can be managed using our [CLI tool](https://github.com/Prajwalprakash3722/gocluster-cli). Example commands:
+
 ```bash
-./agent -c cluster.conf
+# List available clusters
+gocluster clusters
+
+# Select a cluster
+gocluster use stg-nodes
+
+# List operators
+gocluster operator list
 ```
-Access at `http://localhost:8080`
 
-## 🔌 Operator System
+## Operator System
 
-GoCluster features an rich operator plugin system for extending cluster functionality. Operators are modular components that can perform specific tasks across your cluster.
-
-### Creating Custom Operators
-
-All operators must implement the following interface:
+GoCluster uses a plugin system for extending cluster functionality. Custom operators must implement:
 
 ```go
 type Operator interface {
-    Name() string
+    Info() OperatorInfo
     Init(config map[string]interface{}) error
     Execute(ctx context.Context, params map[string]interface{}) error
     Rollback(ctx context.Context) error
     Cleanup() error
 }
 ```
+
 ### Best Practices
+
 - Implement proper error handling
 - Use context for cancellation
-- Provide rollback capabilities, very important incase of failure **(Hope is not a strategy)**.
+- Provide rollback capabilities
 - Include validation checks
 - Maintain idempotency
 
-The project includes an Aerospike operator as a reference implementation. This operator manages Aerospike database configuration across your cluster.
-
-
-Place your operator in `internal/operator/plugins/youroperatorname/`
-
-## 📊 Cluster Status Example
-
-```text
-Cluster Status:
-Local node: node001 (State: leader)
-Leader: node001
-Cluster nodes:
-- node002 (State: follower, Last seen: 1s)
-- node003 (State: follower, Last seen: 1s)
-```
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 .
@@ -130,55 +111,58 @@ Cluster nodes:
 ├── LICENSE
 ├── Makefile
 ├── README.md
-├── agent
 ├── cluster.yaml
 ├── cmd
-│   └── agent
+│   └── gocluster-manager
 │       └── main.go
 ├── docker-compose.yml
 ├── go.mod
 ├── go.sum
 ├── gocluster-manager
+├── gocluster-manager-macos
 └── internal
     ├── cluster
-    │   ├── manager.go
-    │   └── node.go
+    │   └── manager.go
     ├── config
     │   └── config.go
     ├── operator
-    │   ├── interface.go
     │   ├── manager.go
     │   └── plugins
-    │       └── aerospike
-    │           ├── config.go
-    │           └── operator.go
+    │       ├── aerospike
+    │       │   ├── aerospike_operator.go
+    │       │   └── config.go
+    │       ├── hello
+    │       │   └── operator.go
+    │       └── mysql
+    │           └── mysql_operator.go
+    ├── types
+    │   └── types.go
     └── web
         ├── handler.go
         └── templates
             └── index.html
 
-11 directories, 20 files
+14 directories, 21 files
 ```
 
-## 🛣️ Roadmap (Highly dependent on my mood and time availability)
-
+## Roadmap
+_(Highly dependent on my mood and time availability)_ :smile:
+- [ ] Add Debug/Info/Error Logs (priority)
+- [ ] Add Tests
 - [x] Custom operation framework
 - [ ] Distributed task execution system
 - [ ] Secure communication (TLS/mTLS)
 - [ ] Web-based cluster management UI
-- [ ] Configuration replication
-- [ ] Load balancing capabilities
 - [ ] Metrics and monitoring
 - [ ] Multi-region support
 
-## 🤝 Contributing
+## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+Contributions are welcome. Please submit a pull request for review.
 
-## 📝 License
+## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+[MIT License](LICENSE)
 
-<div align="center">
-Crafted with ❤️ by <a href="https://github.com/Prajwalprakash3722">@prajwal.p</a>
-</div>
+---
+Created by [@prajwal.p](https://github.com/Prajwalprakash3722)

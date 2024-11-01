@@ -1,32 +1,39 @@
+// internal/operator/manager.go
 package operator
 
 import (
+	"agent/internal/types"
 	"context"
 	"fmt"
+	"log"
 	"sync"
+	"time"
+
+	"github.com/google/uuid"
 )
 
-// OperatorManager handles registration and execution of operators
 type OperatorManager struct {
-	operators   map[string]Operator
-	operatorsMu sync.RWMutex
+	operators    map[string]types.Operator
+	operatorsMu  sync.RWMutex
+	clusterOps   types.ClusterOperations
+	executions   map[string]*types.DistributedExecution
+	executionsMu sync.RWMutex
 }
 
-// NewOperatorManager creates a new operator manager
 func NewOperatorManager() *OperatorManager {
 	return &OperatorManager{
-		operators: make(map[string]Operator),
+		operators:  make(map[string]types.Operator),
+		executions: make(map[string]*types.DistributedExecution),
 	}
 }
 
-// RegisterOperator registers a new operator
-func (m *OperatorManager) RegisterOperator(op Operator) error {
+func (m *OperatorManager) SetClusterOperations(ops types.ClusterOperations) {
+	m.clusterOps = ops
+}
+
+func (m *OperatorManager) RegisterOperator(op types.Operator) error {
 	m.operatorsMu.Lock()
 	defer m.operatorsMu.Unlock()
-
-	if m.operators == nil {
-		m.operators = make(map[string]Operator)
-	}
 
 	name := op.Info().Name
 	if _, exists := m.operators[name]; exists {
@@ -37,7 +44,7 @@ func (m *OperatorManager) RegisterOperator(op Operator) error {
 	return nil
 }
 
-func (m *OperatorManager) GetOperator(name string) (Operator, error) {
+func (m *OperatorManager) GetOperator(name string) (types.Operator, error) {
 	m.operatorsMu.RLock()
 	defer m.operatorsMu.RUnlock()
 
@@ -49,12 +56,107 @@ func (m *OperatorManager) GetOperator(name string) (Operator, error) {
 	return op, nil
 }
 
+func (m *OperatorManager) ExecuteOperator(ctx context.Context, name string, params map[string]interface{}) error {
+	log.Printf("[OperatorManager] Starting execution for operator: %s", name)
+	log.Printf("[OperatorManager] Params received: %+v", params)
+
+	// Generate execution ID
+	executionID := uuid.New().String()
+	log.Printf("[OperatorManager] Generated execution ID: %s", executionID)
+
+	// Create execution message
+	execMsg := types.OperatorExecMessage{
+		ExecutionID:  executionID,
+		OperatorName: name,
+		Operation:    params["operation"].(string),
+		Params:       params["params"].(map[string]interface{}),
+		Config:       params["config"].(map[string]interface{}),
+		Parallel:     true,
+	}
+	log.Printf("[OperatorManager] Created execution message: %+v", execMsg)
+
+	// Check leadership status
+	isLeader := m.clusterOps.IsLeader()
+	log.Printf("[OperatorManager] Current node is leader: %v", isLeader)
+
+	// If we're not the leader, forward to leader
+	if !isLeader {
+		log.Printf("[OperatorManager] Not leader, forwarding request to leader")
+		err := m.clusterOps.SendExecRequestToLeader(execMsg)
+		if err != nil {
+			log.Printf("[OperatorManager] Error forwarding to leader: %v", err)
+			return err
+		}
+		log.Printf("[OperatorManager] Successfully forwarded request to leader")
+		return nil
+	}
+
+	log.Printf("[OperatorManager] We are leader, proceeding with execution")
+	execution := types.NewDistributedExecution(executionID)
+
+	// Store execution
+	m.executionsMu.Lock()
+	m.executions[executionID] = execution
+	m.executionsMu.Unlock()
+	log.Printf("[OperatorManager] Stored execution tracking for ID: %s", executionID)
+
+	// Start gathering results in background
+	log.Printf("[OperatorManager] Starting result gatherer for execution: %s", executionID)
+	go m.gatherResults(execution)
+
+	// Broadcast to all nodes including self
+	log.Printf("[OperatorManager] Broadcasting execution to all nodes")
+	if err := m.clusterOps.BroadcastOperatorExecution(execMsg); err != nil {
+		log.Printf("[OperatorManager] Error broadcasting execution: %v", err)
+		return fmt.Errorf("failed to broadcast execution: %w", err)
+	}
+
+	log.Printf("[OperatorManager] Successfully initiated distributed execution: %s", executionID)
+	return nil
+}
+
+func (m *OperatorManager) gatherResults(execution *types.DistributedExecution) {
+	nodeCount := m.clusterOps.GetNodeCount()
+	resultCount := 0
+
+	for {
+		select {
+		case result := <-execution.ResultsChan:
+			m.executionsMu.Lock()
+			execution.Results[result.NodeID] = result
+			resultCount++
+
+			if resultCount >= nodeCount {
+				close(execution.Done)
+				m.executionsMu.Unlock()
+				return
+			}
+			m.executionsMu.Unlock()
+
+		case <-time.After(30 * time.Second):
+			m.executionsMu.Lock()
+			close(execution.Done)
+			m.executionsMu.Unlock()
+			return
+		}
+	}
+}
+
+func (m *OperatorManager) HandleOperatorResult(result *types.OperatorResult) {
+	m.executionsMu.Lock()
+	defer m.executionsMu.Unlock()
+
+	if execution, exists := m.executions[result.ExecutionID]; exists {
+		execution.ResultsChan <- result
+	}
+}
+
 // ListOperators returns a list of all registered operators
-func (m *OperatorManager) ListOperators() []OperatorInfo {
+func (m *OperatorManager) ListOperators() []types.OperatorInfo {
 	m.operatorsMu.RLock()
 	defer m.operatorsMu.RUnlock()
 
-	var operators []OperatorInfo
+	var operators []types.OperatorInfo
 	for name := range m.operators {
 
 		op, err := m.GetOperator(name)
@@ -64,76 +166,4 @@ func (m *OperatorManager) ListOperators() []OperatorInfo {
 		operators = append(operators, op.Info())
 	}
 	return operators
-}
-
-func (m *OperatorManager) ExecuteOperator(ctx context.Context, name string, params map[string]interface{}) error {
-	op, err := m.GetOperator(name)
-	if err != nil {
-		return fmt.Errorf("operator %s not found", name)
-	}
-
-	// Check if operation parameter exists
-	operation, exists := params["operation"].(string)
-	if !exists {
-		return fmt.Errorf("operation parameter is missing")
-	}
-
-	// Get operator info for validation
-	info := op.Info()
-
-	// Check if operation exists in schema
-	opSchema, exists := info.Operations[operation]
-	if !exists {
-		return fmt.Errorf("operation %s not found for operator %s", operation, name)
-	}
-
-	// Extract the nested parameters
-	var operationParams map[string]interface{}
-	if p, ok := params["params"].(map[string]interface{}); ok {
-		operationParams = p
-	} else {
-		operationParams = make(map[string]interface{})
-	}
-
-	// Extract config parameters
-	var configParams map[string]interface{}
-	if c, ok := params["config"].(map[string]interface{}); ok {
-		configParams = c
-	} else {
-		configParams = make(map[string]interface{})
-	}
-
-	// Validate operation parameters
-	if err := validateParams(operationParams, opSchema.Parameters); err != nil {
-		return fmt.Errorf("parameter validation failed: %w", err)
-	}
-
-	// Validate config parameters if schema has config requirements
-	if opSchema.Config != nil {
-		if err := validateParams(configParams, opSchema.Config); err != nil {
-			return fmt.Errorf("config validation failed: %w", err)
-		}
-	}
-
-	// Execute the operator with the original params to maintain structure
-	if err := op.Execute(ctx, params); err != nil {
-		return fmt.Errorf("operator execution failed: %w", err)
-	}
-
-	return op.Cleanup()
-}
-
-func validateParams(params map[string]interface{}, schema map[string]ParamSchema) error {
-	for name, paramSchema := range schema {
-		if paramSchema.Required {
-			value, exists := params[name]
-			if !exists {
-				return fmt.Errorf("required parameter %s is missing", name)
-			}
-			if value == nil {
-				return fmt.Errorf("required parameter %s cannot be nil", name)
-			}
-		}
-	}
-	return nil
 }
