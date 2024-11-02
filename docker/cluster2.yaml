@@ -1,0 +1,11 @@
+cluster:
+  name: local
+  discovery_port: 7946
+  bind_address: 0.0.0.0
+  web_address: 0.0.0.0:8080
+  enable_operators: true
+nodes:
+  node1: node1:7946
+  node3: node3:7946
+plugins:
+  - hello

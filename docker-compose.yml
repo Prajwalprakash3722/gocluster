@@ -1,32 +1,40 @@
 version: "3.8"
-
 services:
   node1:
     build: .
     container_name: cluster-node1
-    hostname: node001
+    hostname: node1
+    volumes:
+      - ./docker/cluster.yaml:/app/cluster.yaml
+    ports:
+      - "8081:8080"
+      - "7947:7946"
     networks:
       - cluster-net
-    environment:
-      - HOSTNAME=node001
 
   node2:
     build: .
     container_name: cluster-node2
-    hostname: node002
+    hostname: node2
+    volumes:
+      - ./docker/cluster2.yaml:/app/cluster.yaml
+    ports:
+      - "8082:8080"
+      - "7948:7946"
     networks:
       - cluster-net
-    environment:
-      - HOSTNAME=node002
 
   node3:
     build: .
     container_name: cluster-node3
-    hostname: node003
+    hostname: node3
+    volumes:
+      - ./docker/cluster3.yaml:/app/cluster.yaml
+    ports:
+      - "8083:8080"
+      - "7949:7946"
     networks:
       - cluster-net
-    environment:
-      - HOSTNAME=node003
 
 networks:
   cluster-net:

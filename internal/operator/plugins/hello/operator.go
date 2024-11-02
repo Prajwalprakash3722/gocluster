@@ -26,7 +26,7 @@ func (o *HelloOperator) Info() types.OperatorInfo {
 		Name:        "hello-world",
 		Version:     "1.0.0",
 		Description: "A simple hello world operator for testing",
-		Author:      "test-author",
+		Author:      "prajwal.p",
 		Operations: map[string]types.OperationSchema{
 			"greet": {
 				Description: "Send a greeting message",

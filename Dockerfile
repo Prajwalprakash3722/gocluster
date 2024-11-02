@@ -1,33 +1,16 @@
-# Build stage
-FROM ubuntu:22.04 AS builder
-
-# Set non-interactive installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install Go and essential tools
-RUN apt-get install -y \
-  golang-go \
-  git \
-  make \
-  && rm -rf /var/lib/apt/lists/*
+FROM golang:1.21-alpine
 
 WORKDIR /app
 
-# Copy go mod files
-COPY go.mod ./
-COPY go.sum ./
+RUN apk add --no-cache git  #required for go mod download
+
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o agent cmd/agent/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o gocluster-manager cmd/gocluster-manager/main.golinux
 
-# Final stage
-FROM ubuntu:22.04
+EXPOSE 8080 7946
 
-WORKDIR /app
-COPY --from=builder /app/agent .
-
-ENTRYPOINT ["/app/agent"]
+ENTRYPOINT ["/app/gocluster-manager", "-c", "/app/cluster.yaml"]
