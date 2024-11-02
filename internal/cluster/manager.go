@@ -185,7 +185,7 @@ func (m *Manager) ExecuteOperator(ctx context.Context, execMsg types.OperatorExe
 	log.Printf("[ClusterManager] Execution completed in %v, success: %v", duration, err == nil)
 	if err != nil {
 		op.Rollback(ctx)
-		log.Printf("[ClusterManager] Execution error: %v", err)
+		log.Printf("[ClusterManager] Execution error: %v, calling rollback", err)
 	}
 
 	result := types.OperatorResult{
@@ -358,8 +358,19 @@ func (m *Manager) SendExecRequestToLeader(msg types.OperatorExecMessage) error {
 	}
 
 	data, err := json.Marshal(msg)
+
 	if err != nil {
 		return err
+	}
+
+	opExecMsg := types.Message{
+		ID:       m.localNode.ID,
+		Hostname: m.localNode.Hostname,
+		Address:  m.localNode.Address,
+		Port:     m.localNode.Port,
+		State:    m.localNode.State,
+		Type:     types.MessageTypeOperatorExecToLeader,
+		Data:     data,
 	}
 
 	addr := &net.UDPAddr{
@@ -367,7 +378,12 @@ func (m *Manager) SendExecRequestToLeader(msg types.OperatorExecMessage) error {
 		Port: leaderNode.Port,
 	}
 
-	_, err = m.conn.WriteToUDP(data, addr)
+	marshaledData, err := json.Marshal(opExecMsg)
+	if err != nil {
+		return err
+	}
+
+	_, err = m.conn.WriteToUDP(marshaledData, addr)
 	return err
 }
 
@@ -381,6 +397,10 @@ func (m *Manager) GetNodes() map[string]*types.Node {
 		nodeCopy := *v
 		nodes[k] = &nodeCopy
 	}
+	// adds local node to the map as it is not part of nodes map
+	nodeCopy := *m.localNode
+	nodes[m.localNode.ID] = &nodeCopy
+
 	return nodes
 }
 
@@ -591,6 +611,7 @@ func (m *Manager) receiveMessages() {
 			case types.MessageTypeHeartbeat:
 				m.handleMessage(msg)
 
+			// operator execution message from client
 			case types.MessageTypeOperatorExec:
 				log.Printf("[ClusterManager] Received operator execution message")
 				var execMsg types.OperatorExecMessage
@@ -601,6 +622,7 @@ func (m *Manager) receiveMessages() {
 				log.Printf("[ClusterManager] Executing operator from message: %+v", execMsg)
 				go m.ExecuteOperator(context.Background(), execMsg)
 
+			// operator result message from nodes
 			case types.MessageTypeOperatorResult:
 				log.Printf("[ClusterManager] Received operator result message")
 				var result types.OperatorResult
@@ -613,7 +635,34 @@ func (m *Manager) receiveMessages() {
 					m.operatorManager.HandleOperatorResult(&result)
 				}
 
+			// operator exec request message from a node
+			case types.MessageTypeOperatorExecToLeader:
+				log.Printf("[ClusterManager] Received exec request message")
+
+				// check from which node the message came from, and if it is part of the cluster?
+				if _, exists := m.nodes[msg.ID]; !exists {
+					log.Printf("[ClusterManager] Node %s is not part of the cluster", msg.ID)
+					return
+				}
+
+				//  check if we are the leader, if so process, if not skip
+				if m.localNode.State == types.StateLeader {
+					log.Printf("[ClusterManager] Processing exec request as we are the leader")
+					var execReq types.OperatorExecMessage
+					if err := json.Unmarshal(msg.Data, &execReq); err != nil {
+						log.Printf("[ClusterManager] Error unmarshaling exec request: %v", err)
+						continue
+					}
+					log.Printf("[ClusterManager] Broadcasting operator execution to other nodes")
+					if err := m.BroadcastOperatorExecution(execReq); err != nil {
+						log.Printf("[OperatorManager] Error broadcasting execution: %v", err)
+						return
+					}
+				}
+
 			default:
+				// print the msg content
+				log.Printf("[ClusterManager] Received message: %+v", msg)
 				log.Printf("[ClusterManager] Unknown message type: %s", msg.Type)
 			}
 		}

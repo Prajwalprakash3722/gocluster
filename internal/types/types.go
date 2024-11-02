@@ -144,9 +144,10 @@ type Status struct {
 type MessageType string
 
 const (
-	MessageTypeHeartbeat      MessageType = "heartbeat"
-	MessageTypeOperatorExec   MessageType = "operator_exec"
-	MessageTypeOperatorResult MessageType = "operator_result"
+	MessageTypeHeartbeat            MessageType = "heartbeat"
+	MessageTypeOperatorExec         MessageType = "operator_exec"
+	MessageTypeOperatorResult       MessageType = "operator_result"
+	MessageTypeOperatorExecToLeader MessageType = "exec_request_to_leader"
 )
 
 const (
