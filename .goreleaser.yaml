@@ -1,0 +1,46 @@
+version: 2
+
+project_name: gocluster
+
+# General release configuration
+release:
+  github:
+    owner: PrajwalPrakash3722
+    name: gocluster
+
+# Building section
+builds:
+  - id: gocluster-manager
+    main: ./cmd/gocluster-manager/main.go
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: gocluster-manager
+    ldflags:
+      - -s -w
+    env:
+      - CGO_ENABLED=0
+
+# Archive configuration
+archives:
+  - format: tar.gz
+    files:
+      - docker/cluster.yaml
+      - docker/cluster2.yaml
+      - docker/cluster3.yaml
+
+# Snapshot configuration
+snapshot:
+  name_template: "{{ .Tag }}-SNAPSHOT-{{ .ShortCommit }}"
+
+# Changelog generation (optional)
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
