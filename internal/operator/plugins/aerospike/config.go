@@ -1,265 +1,544 @@
-package aerospike_operator
+package aerospike
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
-// ConfigNode represents a node in the Aerospike configuration tree
-type ConfigNode struct {
-	Name       string                  // Name of the section/key
-	Value      string                  // Value if it's a property
-	Properties map[string]string       // Key-value properties
-	Children   map[string][]ConfigNode // Named sections can have multiple instances (e.g., multiple namespaces)
+// AerospikeConfig represents the Aerospike configuration
+type AerospikeConfig struct {
+	Service    Service     `json:"service"`
+	Logging    Logging     `json:"logging"`
+	Network    Network     `json:"network"`
+	Namespaces []Namespace `json:"namespaces"`
 }
 
-// NewConfigNode creates a new configuration node
-func NewConfigNode(name string) *ConfigNode {
-	return &ConfigNode{
-		Name:       name,
-		Properties: make(map[string]string),
-		Children:   make(map[string][]ConfigNode),
-	}
+// Service represents the service configuration section
+type Service struct {
+	User                       string   `json:"user"`
+	Group                      string   `json:"group"`
+	PidsFile                   string   `json:"pids_file"`
+	ProtocolsEnabled           []string `json:"protocols_enabled"`
+	ServiceThreads             int      `json:"service_threads"`
+	TransactionQueues          int      `json:"transaction_queues"`
+	TransactionThreadsPerQueue int      `json:"transaction_threads_per_queue"`
 }
 
-// ParseConfig reads and parses an Aerospike configuration file
-func ParseConfig(filePath string) (*ConfigNode, error) {
-	file, err := os.Open(filePath)
+// Logging represents the logging configuration section
+type Logging struct {
+	File    string  `json:"file"`
+	Console Console `json:"console"`
+}
+
+// Console represents the console logging configuration
+type Console struct {
+	Context string `json:"context"`
+}
+
+// Network represents the network configuration section
+type Network struct {
+	Service   NetworkService   `json:"service"`
+	Heartbeat NetworkHeartbeat `json:"heartbeat"`
+	Fabric    NetworkFabric    `json:"fabric"`
+	Info      NetworkInfo      `json:"info"`
+}
+
+// NetworkService represents the service network configuration
+type NetworkService struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
+// NetworkHeartbeat represents the heartbeat network configuration
+type NetworkHeartbeat struct {
+	Mode     string `json:"mode"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Interval int    `json:"interval"`
+	Timeout  int    `json:"timeout"`
+}
+
+// NetworkFabric represents the fabric network configuration
+type NetworkFabric struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
+// NetworkInfo represents the info network configuration
+type NetworkInfo struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
+// Namespace represents a namespace configuration
+type Namespace struct {
+	Name              string  `json:"name"`
+	ReplicationFactor int     `json:"replication_factor"`
+	MemorySize        string  `json:"memory_size"`
+	DefaultTTL        string  `json:"default_ttl"`
+	HighWaterPercent  int     `json:"high_water_percent"`
+	StopWritesPercent int     `json:"stop_writes_percent"`
+	Storage           Storage `json:"storage"`
+}
+
+// Storage represents storage configuration for a namespace
+type Storage struct {
+	Engine       string `json:"engine"`
+	Filesize     string `json:"filesize,omitempty"`
+	DataInMemory bool   `json:"data_in_memory,omitempty"`
+}
+
+// LoadConfig loads Aerospike configuration from a file
+func LoadConfig(configPath string) (*AerospikeConfig, error) {
+	file, err := os.Open(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %v", err)
 	}
 	defer file.Close()
 
-	root := NewConfigNode("root")
-	stack := []*ConfigNode{root}
+	config := &AerospikeConfig{
+		Namespaces: []Namespace{},
+	}
+
 	scanner := bufio.NewScanner(file)
-	lineNum := 0
+	var currentSection string
+	var currentNamespace *Namespace
+	var inStorage bool
 
 	for scanner.Scan() {
-		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 
-		// Skip empty lines and comments
+		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		// Handle section end
+		// Handle section starts
+		if strings.HasPrefix(line, "service {") {
+			currentSection = "service"
+			continue
+		} else if strings.HasPrefix(line, "logging {") {
+			currentSection = "logging"
+			continue
+		} else if strings.HasPrefix(line, "network {") {
+			currentSection = "network"
+			continue
+		} else if strings.HasPrefix(line, "namespace ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				namespaceName := strings.Trim(parts[1], "{")
+				currentNamespace = &Namespace{Name: namespaceName}
+				config.Namespaces = append(config.Namespaces, *currentNamespace)
+				currentNamespace = &config.Namespaces[len(config.Namespaces)-1]
+				currentSection = "namespace"
+			}
+			continue
+		} else if strings.HasPrefix(line, "storage {") && currentSection == "namespace" {
+			inStorage = true
+			continue
+		}
+
+		// Handle section ends
 		if line == "}" {
-			if len(stack) > 1 {
-				stack = stack[:len(stack)-1]
-			}
-			continue
-		}
-
-		current := stack[len(stack)-1]
-
-		// Handle section start
-		if strings.HasSuffix(line, "{") {
-			sectionDeclaration := strings.TrimSuffix(line, "{")
-			parts := strings.Fields(sectionDeclaration)
-
-			var newNode *ConfigNode
-			if len(parts) == 1 {
-				// Simple section like "network {"
-				newNode = NewConfigNode(parts[0])
+			if inStorage {
+				inStorage = false
 			} else {
-				// Named section like "namespace test {"
-				newNode = NewConfigNode(parts[1])
-				// Add to the appropriate section list
-				current.Children[parts[0]] = append(current.Children[parts[0]], *newNode)
+				currentSection = ""
+				currentNamespace = nil
 			}
-			stack = append(stack, newNode)
 			continue
 		}
 
-		// Handle properties
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			key := parts[0]
-			value := strings.Join(parts[1:], " ")
-			current.Properties[key] = value
+		// Parse configuration directives
+		if err := parseConfigLine(line, currentSection, config, currentNamespace, inStorage); err != nil {
+			// Log warning but continue parsing
+			fmt.Printf("Warning: %v\n", err)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading config file at line %d: %v", lineNum, err)
+		return nil, fmt.Errorf("error reading config file: %v", err)
 	}
 
-	return root, nil
+	return config, nil
 }
 
-// Helper methods for ConfigNode
-
-func (n *ConfigNode) GetNamespace(name string) *ConfigNode {
-	namespaces, exists := n.Children["namespace"]
-	if !exists {
-		return nil
+// parseConfigLine parses a single configuration line
+func parseConfigLine(line, section string, config *AerospikeConfig, namespace *Namespace, inStorage bool) error {
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid config line: %s", line)
 	}
 
-	for _, ns := range namespaces {
-		if ns.Name == name {
-			return &ns
+	key := parts[0]
+	value := strings.Join(parts[1:], " ")
+
+	switch section {
+	case "service":
+		return parseServiceConfig(key, value, &config.Service)
+	case "logging":
+		return parseLoggingConfig(key, value, &config.Logging)
+	case "network":
+		return parseNetworkConfig(key, value, &config.Network)
+	case "namespace":
+		if inStorage {
+			return parseStorageConfig(key, value, &namespace.Storage)
+		}
+		return parseNamespaceConfig(key, value, namespace)
+	}
+
+	return nil
+}
+
+// parseServiceConfig parses service configuration
+func parseServiceConfig(key, value string, service *Service) error {
+	switch key {
+	case "user":
+		service.User = value
+	case "group":
+		service.Group = value
+	case "pids-file":
+		service.PidsFile = value
+	case "protocols-enabled":
+		service.ProtocolsEnabled = strings.Split(value, ",")
+	case "service-threads":
+		if v, err := strconv.Atoi(value); err == nil {
+			service.ServiceThreads = v
+		}
+	case "transaction-queues":
+		if v, err := strconv.Atoi(value); err == nil {
+			service.TransactionQueues = v
+		}
+	case "transaction-threads-per-queue":
+		if v, err := strconv.Atoi(value); err == nil {
+			service.TransactionThreadsPerQueue = v
 		}
 	}
 	return nil
 }
 
-func (n *ConfigNode) GetProperty(key string) (string, bool) {
-	value, exists := n.Properties[key]
-	return value, exists
-}
-
-func (n *ConfigNode) GetSection(name string) []ConfigNode {
-	return n.Children[name]
-}
-
-// ToString returns a string representation of the config node
-func (n *ConfigNode) ToString(indent string) string {
-	var sb strings.Builder
-
-	// Write properties
-	for k, v := range n.Properties {
-		sb.WriteString(fmt.Sprintf("%s%s %s\n", indent, k, v))
+// parseLoggingConfig parses logging configuration
+func parseLoggingConfig(key, value string, logging *Logging) error {
+	switch key {
+	case "file":
+		logging.File = value
+	case "console":
+		// Handle console context
+		logging.Console.Context = value
 	}
+	return nil
+}
 
-	// Write children
-	for section, nodes := range n.Children {
-		for _, node := range nodes {
-			if node.Name != "" {
-				sb.WriteString(fmt.Sprintf("%s%s %s {\n", indent, section, node.Name))
-			} else {
-				sb.WriteString(fmt.Sprintf("%s%s {\n", indent, section))
+// parseNetworkConfig parses network configuration
+func parseNetworkConfig(key, value string, network *Network) error {
+	switch key {
+	case "service":
+		return parseNetworkService(value, &network.Service)
+	case "heartbeat":
+		return parseNetworkHeartbeat(value, &network.Heartbeat)
+	case "fabric":
+		return parseNetworkFabric(value, &network.Fabric)
+	case "info":
+		return parseNetworkInfo(value, &network.Info)
+	}
+	return nil
+}
+
+// parseNetworkService parses network service configuration
+func parseNetworkService(value string, service *NetworkService) error {
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "address") {
+			service.Address = strings.TrimPrefix(part, "address ")
+		} else if strings.HasPrefix(part, "port") {
+			if port, err := strconv.Atoi(strings.TrimPrefix(part, "port ")); err == nil {
+				service.Port = port
 			}
-			sb.WriteString(node.ToString(indent + "  "))
-			sb.WriteString(fmt.Sprintf("%s}\n", indent))
 		}
 	}
-
-	return sb.String()
-}
-
-// NamespaceConfig represents the configuration for a new namespace
-type NamespaceConfig struct {
-	Name               string
-	MemorySize         string
-	ReplicationFactor  int
-	DefaultTTL         int
-	HighWaterDiskPct   int
-	HighWaterMemoryPct int
-	StopWritesPct      int
-	NsupPeriod         int
-	StorageEngine      string
-	DataFile           string
-	FileSize           string
-	DataInMemory       bool
-	WriteBlockSize     string
-	DefragLwmPct       int
-	DefragStartupMin   int
-}
-
-// DefaultNamespaceConfig returns a default configuration for a new namespace
-func DefaultNamespaceConfig(name string) NamespaceConfig {
-	return NamespaceConfig{
-		Name:               name,
-		MemorySize:         "1G",
-		ReplicationFactor:  2,
-		DefaultTTL:         0,
-		HighWaterDiskPct:   70,
-		HighWaterMemoryPct: 70,
-		StopWritesPct:      90,
-		NsupPeriod:         120,
-		StorageEngine:      "device",
-		DataFile:           fmt.Sprintf("/var/lib/aerospike/%s.dat", name),
-		FileSize:           "2G",
-		DataInMemory:       true,
-		WriteBlockSize:     "128K",
-		DefragLwmPct:       50,
-		DefragStartupMin:   10,
-	}
-}
-
-// AddNamespace adds a new namespace to the Aerospike configuration
-func (o *AerospikeOperator) AddNamespace(ctx context.Context, config NamespaceConfig) error {
-	// Read and parse current configuration
-	currentConfig, err := ParseConfig(o.confPath)
-	if err != nil {
-		return fmt.Errorf("failed to parse config: %v", err)
-	}
-
-	// Check if namespace already exists
-	if ns := currentConfig.GetNamespace(config.Name); ns != nil {
-		return fmt.Errorf("namespace %s already exists", config.Name)
-	}
-
-	// Create backup before modification
-	if err := o.createBackup(); err != nil {
-		return fmt.Errorf("failed to create backup: %v", err)
-	}
-
-	// Read the current config file content
-	content, err := os.ReadFile(o.confPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %v", err)
-	}
-
-	// Generate namespace configuration
-	nsConfig := generateNamespaceConfig(config)
-
-	// Append the new namespace to the file
-	newContent := append(content, []byte("\n"+nsConfig)...)
-
-	// Write the updated configuration
-	err = os.WriteFile(o.confPath, newContent, 0644)
-	if err != nil {
-		// Attempt rollback if write fails
-		if rbErr := o.Rollback(ctx); rbErr != nil {
-			return fmt.Errorf("failed to write config: %v, rollback failed: %v", err, rbErr)
-		}
-		return fmt.Errorf("failed to write config and rolled back: %v", err)
-	}
-
-	fmt.Printf("Successfully added namespace '%s' to configuration\n", config.Name)
 	return nil
 }
 
-// generateNamespaceConfig creates the namespace configuration string
-func generateNamespaceConfig(config NamespaceConfig) string {
-	return fmt.Sprintf(`namespace %s {
-        enable-xdr false
-        memory-size %s
-        replication-factor %d
-        default-ttl %d
-        high-water-disk-pct %d
-        high-water-memory-pct %d
-        stop-writes-pct %d
-        nsup-period %d
-        storage-engine %s {
-                file %s
-                filesize %s
-                data-in-memory %t
-                write-block-size %s
-                defrag-lwm-pct %d
-                defrag-startup-minimum %d
-        }
-}`,
-		config.Name,
-		config.MemorySize,
-		config.ReplicationFactor,
-		config.DefaultTTL,
-		config.HighWaterDiskPct,
-		config.HighWaterMemoryPct,
-		config.StopWritesPct,
-		config.NsupPeriod,
-		config.StorageEngine,
-		config.DataFile,
-		config.FileSize,
-		config.DataInMemory,
-		config.WriteBlockSize,
-		config.DefragLwmPct,
-		config.DefragStartupMin,
-	)
+// parseNetworkHeartbeat parses network heartbeat configuration
+func parseNetworkHeartbeat(value string, heartbeat *NetworkHeartbeat) error {
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "mode") {
+			heartbeat.Mode = strings.TrimPrefix(part, "mode ")
+		} else if strings.HasPrefix(part, "address") {
+			heartbeat.Address = strings.TrimPrefix(part, "address ")
+		} else if strings.HasPrefix(part, "port") {
+			if port, err := strconv.Atoi(strings.TrimPrefix(part, "port ")); err == nil {
+				heartbeat.Port = port
+			}
+		} else if strings.HasPrefix(part, "interval") {
+			if interval, err := strconv.Atoi(strings.TrimPrefix(part, "interval ")); err == nil {
+				heartbeat.Interval = interval
+			}
+		} else if strings.HasPrefix(part, "timeout") {
+			if timeout, err := strconv.Atoi(strings.TrimPrefix(part, "timeout ")); err == nil {
+				heartbeat.Timeout = timeout
+			}
+		}
+	}
+	return nil
+}
+
+// parseNetworkFabric parses network fabric configuration
+func parseNetworkFabric(value string, fabric *NetworkFabric) error {
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "address") {
+			fabric.Address = strings.TrimPrefix(part, "address ")
+		} else if strings.HasPrefix(part, "port") {
+			if port, err := strconv.Atoi(strings.TrimPrefix(part, "port ")); err == nil {
+				fabric.Port = port
+			}
+		}
+	}
+	return nil
+}
+
+// parseNetworkInfo parses network info configuration
+func parseNetworkInfo(value string, info *NetworkInfo) error {
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "address") {
+			info.Address = strings.TrimPrefix(part, "address ")
+		} else if strings.HasPrefix(part, "port") {
+			if port, err := strconv.Atoi(strings.TrimPrefix(part, "port ")); err == nil {
+				info.Port = port
+			}
+		}
+	}
+	return nil
+}
+
+// parseNamespaceConfig parses namespace configuration
+func parseNamespaceConfig(key, value string, namespace *Namespace) error {
+	switch key {
+	case "replication-factor":
+		if v, err := strconv.Atoi(value); err == nil {
+			namespace.ReplicationFactor = v
+		}
+	case "memory-size":
+		namespace.MemorySize = value
+	case "default-ttl":
+		namespace.DefaultTTL = value
+	case "high-water-percent":
+		if v, err := strconv.Atoi(value); err == nil {
+			namespace.HighWaterPercent = v
+		}
+	case "stop-writes-pct":
+		if v, err := strconv.Atoi(value); err == nil {
+			namespace.StopWritesPercent = v
+		}
+	}
+	return nil
+}
+
+// parseStorageConfig parses storage configuration
+func parseStorageConfig(key, value string, storage *Storage) error {
+	switch key {
+	case "engine":
+		storage.Engine = value
+	case "filesize":
+		storage.Filesize = value
+	case "data-in-memory":
+		storage.DataInMemory = value == "true"
+	}
+	return nil
+}
+
+// Save saves the configuration to a file
+func (c *AerospikeConfig) Save(configPath string) error {
+	file, err := os.Create(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %v", err)
+	}
+	defer file.Close()
+
+	// Write service section
+	fmt.Fprintf(file, "service {\n")
+	if c.Service.User != "" {
+		fmt.Fprintf(file, "    user %s\n", c.Service.User)
+	}
+	if c.Service.Group != "" {
+		fmt.Fprintf(file, "    group %s\n", c.Service.Group)
+	}
+	if c.Service.PidsFile != "" {
+		fmt.Fprintf(file, "    pids-file %s\n", c.Service.PidsFile)
+	}
+	if len(c.Service.ProtocolsEnabled) > 0 {
+		fmt.Fprintf(file, "    protocols-enabled %s\n", strings.Join(c.Service.ProtocolsEnabled, ","))
+	}
+	if c.Service.ServiceThreads > 0 {
+		fmt.Fprintf(file, "    service-threads %d\n", c.Service.ServiceThreads)
+	}
+	if c.Service.TransactionQueues > 0 {
+		fmt.Fprintf(file, "    transaction-queues %d\n", c.Service.TransactionQueues)
+	}
+	if c.Service.TransactionThreadsPerQueue > 0 {
+		fmt.Fprintf(file, "    transaction-threads-per-queue %d\n", c.Service.TransactionThreadsPerQueue)
+	}
+	fmt.Fprintf(file, "}\n\n")
+
+	// Write logging section
+	fmt.Fprintf(file, "logging {\n")
+	if c.Logging.File != "" {
+		fmt.Fprintf(file, "    file %s\n", c.Logging.File)
+	}
+	if c.Logging.Console.Context != "" {
+		fmt.Fprintf(file, "    console {\n")
+		fmt.Fprintf(file, "        context %s\n", c.Logging.Console.Context)
+		fmt.Fprintf(file, "    }\n")
+	}
+	fmt.Fprintf(file, "}\n\n")
+
+	// Write network section
+	fmt.Fprintf(file, "network {\n")
+	fmt.Fprintf(file, "    service {\n")
+	if c.Network.Service.Address != "" {
+		fmt.Fprintf(file, "        address %s\n", c.Network.Service.Address)
+	}
+	if c.Network.Service.Port > 0 {
+		fmt.Fprintf(file, "        port %d\n", c.Network.Service.Port)
+	}
+	fmt.Fprintf(file, "    }\n")
+
+	fmt.Fprintf(file, "    heartbeat {\n")
+	if c.Network.Heartbeat.Mode != "" {
+		fmt.Fprintf(file, "        mode %s\n", c.Network.Heartbeat.Mode)
+	}
+	if c.Network.Heartbeat.Address != "" {
+		fmt.Fprintf(file, "        address %s\n", c.Network.Heartbeat.Address)
+	}
+	if c.Network.Heartbeat.Port > 0 {
+		fmt.Fprintf(file, "        port %d\n", c.Network.Heartbeat.Port)
+	}
+	if c.Network.Heartbeat.Interval > 0 {
+		fmt.Fprintf(file, "        interval %d\n", c.Network.Heartbeat.Interval)
+	}
+	if c.Network.Heartbeat.Timeout > 0 {
+		fmt.Fprintf(file, "        timeout %d\n", c.Network.Heartbeat.Timeout)
+	}
+	fmt.Fprintf(file, "    }\n")
+
+	if c.Network.Fabric.Address != "" || c.Network.Fabric.Port > 0 {
+		fmt.Fprintf(file, "    fabric {\n")
+		if c.Network.Fabric.Address != "" {
+			fmt.Fprintf(file, "        address %s\n", c.Network.Fabric.Address)
+		}
+		if c.Network.Fabric.Port > 0 {
+			fmt.Fprintf(file, "        port %d\n", c.Network.Fabric.Port)
+		}
+		fmt.Fprintf(file, "    }\n")
+	}
+
+	if c.Network.Info.Address != "" || c.Network.Info.Port > 0 {
+		fmt.Fprintf(file, "    info {\n")
+		if c.Network.Info.Address != "" {
+			fmt.Fprintf(file, "        address %s\n", c.Network.Info.Address)
+		}
+		if c.Network.Info.Port > 0 {
+			fmt.Fprintf(file, "        port %d\n", c.Network.Info.Port)
+		}
+		fmt.Fprintf(file, "    }\n")
+	}
+
+	fmt.Fprintf(file, "}\n\n")
+
+	// Write namespaces
+	for _, ns := range c.Namespaces {
+		fmt.Fprintf(file, "namespace %s {\n", ns.Name)
+		if ns.ReplicationFactor > 0 {
+			fmt.Fprintf(file, "    replication-factor %d\n", ns.ReplicationFactor)
+		}
+		if ns.MemorySize != "" {
+			fmt.Fprintf(file, "    memory-size %s\n", ns.MemorySize)
+		}
+		if ns.DefaultTTL != "" {
+			fmt.Fprintf(file, "    default-ttl %s\n", ns.DefaultTTL)
+		}
+		if ns.HighWaterPercent > 0 {
+			fmt.Fprintf(file, "    high-water-percent %d\n", ns.HighWaterPercent)
+		}
+		if ns.StopWritesPercent > 0 {
+			fmt.Fprintf(file, "    stop-writes-pct %d\n", ns.StopWritesPercent)
+		}
+
+		fmt.Fprintf(file, "    storage {\n")
+		if ns.Storage.Engine != "" {
+			fmt.Fprintf(file, "        engine %s\n", ns.Storage.Engine)
+		}
+		if ns.Storage.Filesize != "" {
+			fmt.Fprintf(file, "        filesize %s\n", ns.Storage.Filesize)
+		}
+		if ns.Storage.DataInMemory {
+			fmt.Fprintf(file, "        data-in-memory true\n")
+		}
+		fmt.Fprintf(file, "    }\n")
+
+		fmt.Fprintf(file, "}\n\n")
+	}
+
+	return nil
+}
+
+// getDefaultConfig returns a default Aerospike configuration
+func getDefaultConfig() *AerospikeConfig {
+	return &AerospikeConfig{
+		Service: Service{
+			User:                       "aerospike",
+			Group:                      "aerospike",
+			PidsFile:                   "/var/run/aerospike/asd.pid",
+			ProtocolsEnabled:           []string{"tcp"},
+			ServiceThreads:             4,
+			TransactionQueues:          4,
+			TransactionThreadsPerQueue: 4,
+		},
+		Logging: Logging{
+			File: "/var/log/aerospike/aerospike.log",
+			Console: Console{
+				Context: "any info",
+			},
+		},
+		Network: Network{
+			Service: NetworkService{
+				Address: "any",
+				Port:    3000,
+			},
+			Heartbeat: NetworkHeartbeat{
+				Mode:     "multicast",
+				Address:  "239.1.99.222",
+				Port:     9918,
+				Interval: 150,
+				Timeout:  10,
+			},
+			Fabric: NetworkFabric{
+				Address: "any",
+				Port:    3001,
+			},
+			Info: NetworkInfo{
+				Address: "any",
+				Port:    3003,
+			},
+		},
+		Namespaces: []Namespace{
+			{
+				Name:              "test",
+				ReplicationFactor: 2,
+				MemorySize:        "1G",
+				DefaultTTL:        "30d",
+				HighWaterPercent:  60,
+				StopWritesPercent: 90,
+				Storage: Storage{
+					Engine: "memory",
+				},
+			},
+		},
+	}
 }

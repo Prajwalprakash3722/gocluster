@@ -1,0 +1,30 @@
+# GoCluster Manager Configuration - etcd backend
+cluster:
+  name: mycluster-etcd
+  discovery_port: 7946
+  bind_address: 0.0.0.0
+  web_address: 0.0.0.0:8080
+  enable_operators: true
+
+backend:
+  type: etcd
+  namespace: gocluster-test
+  
+  etcd_endpoints:
+    - localhost:2379
+  
+  etcd_username: ""
+  etcd_password: ""
+  etcd_cert_file: ""
+  etcd_key_file: ""
+  etcd_ca_file: ""
+  
+  leader_ttl: 30s
+  renew_interval: 10s
+
+nodes:
+ node001: 127.0.0.1:7946
+
+plugins:
+  - jobs
+  - hello

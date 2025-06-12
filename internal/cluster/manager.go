@@ -1,4 +1,3 @@
-// internal/cluster/manager.go
 package cluster
 
 import (
@@ -11,11 +10,38 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-zookeeper/zk"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// Manager handles cluster operations and node management
+type Manager struct {
+	config          *config.Config
+	nodeID          string
+	nodes           map[string]*types.Node
+	isLeader        bool
+	operatorManager *operator.OperatorManager
+
+	// Backend clients
+	etcdClient *clientv3.Client
+	zkConn     *zk.Conn
+
+	// Synchronization
+	mutex  sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Network
+	udpConn  *net.UDPConn
+	stopChan chan struct{}
+}
+
+// ManagerOptions contains options for creating a new manager
 type ManagerOptions struct {
 	ConfigPath      string
 	BindAddress     string
@@ -23,431 +49,174 @@ type ManagerOptions struct {
 	OperatorManager *operator.OperatorManager
 }
 
-type Manager struct {
-	cfg             *config.Config
-	localNode       *types.Node
-	nodes           map[string]*types.Node
-	nodesMu         sync.RWMutex
-	leaderID        string
-	conn            *net.UDPConn
-	ctx             context.Context
-	cancel          context.CancelFunc
-	operatorManager *operator.OperatorManager
-}
-
+// NewManager creates a new cluster manager
 func NewManager(opts ManagerOptions) (*Manager, error) {
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
+		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
+	// Use hostname as node ID for better user experience
+	// Add port for uniqueness in case of multiple instances per host
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get hostname: %w", err)
+		hostname = "unknown"
 	}
-
-	shortHostname := hostname
-	if idx := strings.Index(hostname, "."); idx != -1 {
-		shortHostname = hostname[:idx]
-	}
+	nodeID := fmt.Sprintf("%s:%d", hostname, opts.BindPort)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Manager{
-		cfg: cfg,
-		localNode: &types.Node{
-			ID:       shortHostname,
-			Hostname: shortHostname,
-			Address:  opts.BindAddress,
-			Port:     opts.BindPort,
-			State:    types.StateFollower,
-			LastSeen: time.Now(),
-		},
+	manager := &Manager{
+		config:          cfg,
+		nodeID:          nodeID,
 		nodes:           make(map[string]*types.Node),
+		operatorManager: opts.OperatorManager,
 		ctx:             ctx,
 		cancel:          cancel,
-		operatorManager: opts.OperatorManager,
-	}, nil
+		stopChan:        make(chan struct{}),
+	}
+
+	// Initialize backend
+	if err := manager.initBackend(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to initialize backend: %v", err)
+	}
+
+	// Setup UDP listener for node discovery
+	if err := manager.setupUDPListener(opts.BindAddress, opts.BindPort); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to setup UDP listener: %v", err)
+	}
+
+	return manager, nil
 }
 
-func (m *Manager) Start() error {
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(m.localNode.Address),
-		Port: m.localNode.Port,
+// initBackend initializes the appropriate backend
+func (m *Manager) initBackend() error {
+	switch m.config.Backend.Type {
+	case types.BackendEtcd:
+		return m.initEtcdBackend()
+	case types.BackendZooKeeper:
+		return m.initZooKeeperBackend()
+	case types.BackendMemory:
+		// Memory backend doesn't need initialization
+		return nil
+	default:
+		return fmt.Errorf("unsupported backend type: %s", m.config.Backend.Type)
+	}
+}
+
+// initEtcdBackend initializes etcd backend
+func (m *Manager) initEtcdBackend() error {
+	cfg := clientv3.Config{
+		Endpoints:   m.config.Backend.EtcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	}
+
+	if m.config.Backend.EtcdUsername != "" {
+		cfg.Username = m.config.Backend.EtcdUsername
+		cfg.Password = m.config.Backend.EtcdPassword
+	}
+
+	client, err := clientv3.New(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect to etcd: %v", err)
+	}
+
+	m.etcdClient = client
+	return nil
+}
+
+// initZooKeeperBackend initializes ZooKeeper backend
+func (m *Manager) initZooKeeperBackend() error {
+	timeout, err := time.ParseDuration(m.config.Backend.ZKTimeout)
+	if err != nil {
+		timeout = 30 * time.Second
+	}
+
+	conn, _, err := zk.Connect(m.config.Backend.ZKHosts, timeout)
+	if err != nil {
+		return fmt.Errorf("failed to connect to ZooKeeper: %v", err)
+	}
+
+	m.zkConn = conn
+	return nil
+}
+
+// setupUDPListener sets up UDP listener for node discovery
+func (m *Manager) setupUDPListener(address string, port int) error {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", address, port))
+	if err != nil {
+		return fmt.Errorf("failed to resolve UDP address: %v", err)
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to start UDP listener: %w", err)
+		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
-	m.conn = conn
 
-	// Initialize nodes from config
-	for hostname, addrStr := range m.cfg.Nodes {
-		shortHostname := hostname
-		if idx := strings.Index(hostname, "."); idx != -1 {
-			shortHostname = hostname[:idx]
-		}
-
-		if shortHostname != m.localNode.Hostname {
-			// Parse the address from config
-			_, port, err := config.ParseAddress(addrStr)
-			if err != nil {
-				log.Printf("Warning: invalid address for node %s: %v", hostname, err)
-				continue
-			}
-
-			ip, err := resolveHostname(strings.Split(addrStr, ":")[0])
-			if err != nil {
-				log.Printf("Warning: could not resolve %s: %v", hostname, err)
-				ip = strings.Split(addrStr, ":")[0]
-			}
-
-			m.nodes[shortHostname] = &types.Node{
-				ID:       shortHostname,
-				Hostname: strings.Split(addrStr, ":")[0],
-				Address:  ip,
-				Port:     port,
-				State:    types.StateUnknown,
-				LastSeen: time.Now(),
-			}
-			log.Printf("Added node %s with address %s:%d", shortHostname, ip, port)
-		}
-	}
-	m.electNewLeader()
-	go m.receiveMessages()
-	go m.sendHeartbeats()
-	go m.monitorNodes()
-	go m.printStatus()
-
-	log.Printf("Node started: %s listening on %s:%d",
-		m.localNode.Hostname,
-		m.localNode.Address,
-		m.localNode.Port)
-
+	m.udpConn = conn
 	return nil
 }
 
+// Start starts the cluster manager
+func (m *Manager) Start() error {
+	log.Printf("Starting cluster manager with node ID: %s", m.nodeID)
+
+	// Add self to nodes
+	hostname, _ := os.Hostname()
+	m.addNode(&types.Node{
+		ID:       m.nodeID,
+		Address:  m.udpConn.LocalAddr().String(),
+		Status:   "running",
+		LastSeen: time.Now(),
+		IsLeader: false,
+		Metadata: map[string]interface{}{
+			"hostname": hostname,
+		},
+	})
+
+	// Start leader election
+	go m.runLeaderElection()
+
+	// Start UDP listener
+	go m.runUDPListener()
+
+	// Start node discovery
+	go m.runNodeDiscovery()
+
+	// Start health monitoring
+	go m.runHealthMonitor()
+
+	log.Printf("Cluster manager started successfully")
+	return nil
+}
+
+// Stop stops the cluster manager
 func (m *Manager) Stop() {
-	if m.cancel != nil {
-		m.cancel()
+	log.Printf("Stopping cluster manager...")
+
+	close(m.stopChan)
+	m.cancel()
+
+	if m.udpConn != nil {
+		m.udpConn.Close()
 	}
-	if m.conn != nil {
-		m.conn.Close()
+
+	if m.etcdClient != nil {
+		m.etcdClient.Close()
 	}
+
+	if m.zkConn != nil {
+		m.zkConn.Close()
+	}
+
+	log.Printf("Cluster manager stopped")
 }
 
-func resolveHostname(hostname string) (string, error) {
-	ips, err := net.LookupIP(hostname)
-	if err != nil {
-		return "", fmt.Errorf("could not resolve host %s: %v", hostname, err)
-	}
-
-	// Prefer IPv4
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4.String(), nil
-		}
-	}
-
-	return "", fmt.Errorf("no IPv4 address found for %s", hostname)
-}
-
-func (m *Manager) ExecuteOperator(ctx context.Context, execMsg types.OperatorExecMessage) error {
-	log.Printf("[ClusterManager] Starting operator execution on node %s", m.localNode.ID)
-	log.Printf("[ClusterManager] Execution details - ID: %s, Operator: %s, Operation: %s",
-		execMsg.ExecutionID, execMsg.OperatorName, execMsg.Operation)
-	if m.operatorManager == nil {
-		log.Printf("[ClusterManager] Operator manager not initialized")
-		return fmt.Errorf("operator manager not initialized")
-	}
-	op, err := m.operatorManager.GetOperator(execMsg.OperatorName)
-	if err != nil {
-		log.Printf("[ClusterManager] Error getting operator %s: %v", execMsg.OperatorName, err)
-		return err
-	}
-	log.Printf("[ClusterManager] Successfully retrieved operator %s", execMsg.OperatorName)
-
-	startTime := time.Now()
-	log.Printf("[ClusterManager] Starting execution at: %v", startTime)
-
-	params := map[string]interface{}{
-		"operation": execMsg.Operation,
-		"params":    execMsg.Params,
-		"config":    execMsg.Config,
-	}
-	log.Printf("[ClusterManager] Executing with params: %+v", params)
-
-	err = op.Execute(ctx, params)
-	endTime := time.Now()
-	duration := time.Since(startTime)
-
-	log.Printf("[ClusterManager] Execution completed in %v, success: %v", duration, err == nil)
-	if err != nil {
-		op.Rollback(ctx)
-		log.Printf("[ClusterManager] Execution error: %v, calling rollback", err)
-	}
-
-	result := types.OperatorResult{
-		ExecutionID:  execMsg.ExecutionID,
-		NodeID:       m.localNode.ID,
-		NodeHostname: m.localNode.Hostname,
-		NodeAddress:  m.localNode.Address,
-		NodeState:    m.localNode.State,
-		OperatorName: execMsg.OperatorName,
-		Operation:    execMsg.Operation,
-		Params:       execMsg.Params,
-		Config:       execMsg.Config,
-		StartTime:    startTime,
-		EndTime:      endTime,
-		Duration:     duration.String(),
-		Success:      err == nil,
-	}
-	if err != nil {
-		result.Error = err.Error()
-	}
-
-	log.Printf("[ClusterManager] Created result for execution ID %s: %+v", execMsg.ExecutionID, result)
-
-	isLeader := m.localNode.State == types.StateLeader
-	log.Printf("[ClusterManager] Current node is leader: %v", isLeader)
-
-	if !isLeader {
-		log.Printf("[ClusterManager] Sending result to leader node")
-		err = m.SendResultToLeader(result)
-		if err != nil {
-			log.Printf("[ClusterManager] Error sending result to leader: %v", err)
-		} else {
-			log.Printf("[ClusterManager] Successfully sent result to leader")
-		}
-		return err
-	}
-
-	log.Printf("[ClusterManager] We are leader, handling result directly")
-	m.operatorManager.HandleOperatorResult(&result)
-	log.Printf("[ClusterManager] Successfully handled result for execution ID: %s", execMsg.ExecutionID)
-
-	return nil
-}
-
-func (m *Manager) GetLocalNodeID() string {
-	return m.localNode.ID
-}
-
-func (m *Manager) GetLocalNodeState() types.NodeState {
-	return m.localNode.State
-}
-
-func (m *Manager) IsLeader() bool {
-	return m.localNode.State == types.StateLeader
-}
-
-func (m *Manager) GetNodeCount() int {
-	m.nodesMu.RLock()
-	defer m.nodesMu.RUnlock()
-	return len(m.nodes) + 1
-}
-
-func (m *Manager) BroadcastOperatorExecution(msg types.OperatorExecMessage) error {
-	log.Printf("[ClusterManager] Starting broadcast for operator execution: %s", msg.OperatorName)
-
-	// Execute locally
-	log.Printf("[ClusterManager] Executing operator locally first")
-	go func() {
-		if err := m.ExecuteOperator(context.Background(), msg); err != nil {
-			log.Printf("[ClusterManager] Error in local execution: %v", err)
-		} else {
-			log.Printf("[ClusterManager] Local execution started successfully")
-		}
-	}()
-
-	// Create wrapped message
-	execData, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[ClusterManager] Error marshaling exec message: %v", err)
-		return err
-	}
-
-	message := types.Message{
-		ID:       m.localNode.ID,
-		Hostname: m.localNode.Hostname,
-		Address:  m.localNode.Address,
-		Port:     m.localNode.Port,
-		State:    m.localNode.State,
-		Type:     types.MessageTypeOperatorExec,
-		Data:     execData,
-	}
-
-	// Marshal the complete message
-	data, err := json.Marshal(message)
-	if err != nil {
-		log.Printf("[ClusterManager] Error marshaling wrapper message: %v", err)
-		return err
-	}
-
-	log.Printf("[ClusterManager] Broadcasting to %d nodes", len(m.nodes))
-	for _, node := range m.nodes {
-		addr := &net.UDPAddr{
-			IP:   net.ParseIP(node.Address),
-			Port: node.Port,
-		}
-		log.Printf("[ClusterManager] Sending to node %s at %s:%d",
-			node.Hostname, node.Address, node.Port)
-
-		n, err := m.conn.WriteToUDP(data, addr)
-		if err != nil {
-			log.Printf("[ClusterManager] Error sending to %s: %v", node.Hostname, err)
-		} else {
-			log.Printf("[ClusterManager] Successfully sent %d bytes to %s", n, node.Hostname)
-		}
-	}
-
-	return nil
-}
-
-func (m *Manager) SendResultToLeader(result types.OperatorResult) error {
-	if m.leaderID == "" {
-		return fmt.Errorf("no leader available")
-	}
-
-	var leaderNode *types.Node
-	m.nodesMu.RLock()
-	for _, node := range m.nodes {
-		if node.ID == m.leaderID {
-			leaderNode = node
-			break
-		}
-	}
-	m.nodesMu.RUnlock()
-
-	if leaderNode == nil {
-		return fmt.Errorf("leader node not found")
-	}
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		return err
-	}
-
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(leaderNode.Address),
-		Port: leaderNode.Port,
-	}
-
-	_, err = m.conn.WriteToUDP(data, addr)
-	return err
-}
-
-func (m *Manager) SendExecRequestToLeader(msg types.OperatorExecMessage) error {
-	if m.leaderID == "" {
-		return fmt.Errorf("no leader available")
-	}
-
-	var leaderNode *types.Node
-	m.nodesMu.RLock()
-	for _, node := range m.nodes {
-		if node.ID == m.leaderID {
-			leaderNode = node
-			break
-		}
-	}
-	m.nodesMu.RUnlock()
-
-	if leaderNode == nil {
-		return fmt.Errorf("leader node not found")
-	}
-
-	data, err := json.Marshal(msg)
-
-	if err != nil {
-		return err
-	}
-
-	opExecMsg := types.Message{
-		ID:       m.localNode.ID,
-		Hostname: m.localNode.Hostname,
-		Address:  m.localNode.Address,
-		Port:     m.localNode.Port,
-		State:    m.localNode.State,
-		Type:     types.MessageTypeOperatorExecToLeader,
-		Data:     data,
-	}
-
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(leaderNode.Address),
-		Port: leaderNode.Port,
-	}
-
-	marshaledData, err := json.Marshal(opExecMsg)
-	if err != nil {
-		return err
-	}
-
-	_, err = m.conn.WriteToUDP(marshaledData, addr)
-	return err
-}
-
-func (m *Manager) GetNodes() map[string]*types.Node {
-	m.nodesMu.RLock()
-	defer m.nodesMu.RUnlock()
-
-	// Create a copy of the nodes map to avoid data races
-	nodes := make(map[string]*types.Node)
-	for k, v := range m.nodes {
-		nodeCopy := *v
-		nodes[k] = &nodeCopy
-	}
-	// adds local node to the map as it is not part of nodes map
-	nodeCopy := *m.localNode
-	nodes[m.localNode.ID] = &nodeCopy
-
-	return nodes
-}
-
-func (m *Manager) GetLocalNode() *types.Node {
-	// Return a copy to avoid data races
-	nodeCopy := *m.localNode
-	return &nodeCopy
-}
-
-func (m *Manager) GetLeaderID() string {
-	return m.leaderID
-}
-
-func (m *Manager) GetClusterName() string {
-	return m.cfg.Cluster.Name
-}
-
-func (m *Manager) electNewLeader() {
-	// Already have a leader
-	if m.leaderID != "" {
-		return
-	}
-
-	// Find the node with lowest ID (including ourselves) (we can also choose this random or by hashing but kiss for now)
-	lowestID := m.localNode.ID
-	isLowest := true
-
-	for id := range m.nodes {
-		if id < lowestID {
-			isLowest = false
-			lowestID = id
-		}
-	}
-
-	if isLowest {
-		m.leaderID = m.localNode.ID
-		m.localNode.State = types.StateLeader
-		log.Printf("Became new leader: %s", m.localNode.ID)
-	} else {
-		m.localNode.State = types.StateFollower
-		m.leaderID = lowestID
-		log.Printf("Following new leader: %s", lowestID)
-	}
-}
-
-func (m *Manager) printStatus() {
-	ticker := time.NewTicker(5 * time.Second)
+// runLeaderElection runs the leader election process
+func (m *Manager) runLeaderElection() {
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -455,253 +224,440 @@ func (m *Manager) printStatus() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			fmt.Println("\nCluster Status:")
-			fmt.Printf("Local node: %s (State: %s)\n",
-				m.localNode.Hostname,
-				m.localNode.State)
-			fmt.Printf("Leader: %s\n", m.leaderID)
-
-			m.nodesMu.RLock()
-			fmt.Println("Cluster nodes:")
-			for _, node := range m.nodes {
-				fmt.Printf("- %s (State: %s, Last seen: %s)\n",
-					node.Hostname,
-					node.State,
-					time.Since(node.LastSeen).Round(time.Second))
-			}
-			m.nodesMu.RUnlock()
+			m.performLeaderElection()
 		}
 	}
 }
 
-func (m *Manager) checkNodesHealth() {
-	m.nodesMu.Lock()
-	defer m.nodesMu.Unlock()
+// performLeaderElection performs leader election logic
+func (m *Manager) performLeaderElection() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 
-	now := time.Now()
-	leaderLost := false
-
-	// Check for dead nodes
+	// Simple leader election: node with lowest ID becomes leader
+	var leaderID string
 	for id, node := range m.nodes {
-		if now.Sub(node.LastSeen) > types.NodeTimeout {
-			log.Printf("Node timeout: %s", id)
-			delete(m.nodes, id)
-
-			if id == m.leaderID {
-				log.Printf("Leader %s timed out, initiating new election", id)
-				m.leaderID = ""
-				leaderLost = true
+		if node.Status == "running" {
+			if leaderID == "" || id < leaderID {
+				leaderID = id
 			}
 		}
 	}
 
-	// Immediate leader election if leader was lost
-	if leaderLost {
-		m.electNewLeader()
-	}
-}
+	// Update leader status
+	wasLeader := m.isLeader
+	m.isLeader = (leaderID == m.nodeID)
 
-func (m *Manager) monitorNodes() {
-	ticker := time.NewTicker(types.HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			m.checkNodesHealth()
-		}
-	}
-}
-
-func (m *Manager) handleMessage(msg types.Message) {
-	m.nodesMu.Lock()
-	defer m.nodesMu.Unlock()
-
-	// Update node information
-	if msg.ID != m.localNode.ID {
-		if existing, exists := m.nodes[msg.ID]; exists {
-			existing.LastSeen = time.Now()
-			existing.State = msg.State
-			log.Printf("Updated node %s state to %s", msg.ID, msg.State)
+	if m.isLeader != wasLeader {
+		if m.isLeader {
+			log.Printf("Became cluster leader")
 		} else {
-			m.nodes[msg.ID] = &types.Node{
-				ID:       msg.ID,
-				Hostname: msg.Hostname,
-				Address:  msg.Address,
-				Port:     msg.Port,
-				State:    msg.State,
-				LastSeen: time.Now(),
-			}
-			log.Printf("New node discovered: %s", msg.ID)
+			log.Printf("Lost cluster leadership")
 		}
 	}
 
-	// Handle leader election
-	if msg.State == types.StateLeader {
-		// If message is from current leader, update last seen
-		if msg.ID == m.leaderID {
-			return
-		}
-
-		// If message is from a node with lower ID than current leader
-		if m.leaderID == "" || msg.ID < m.leaderID {
-			m.leaderID = msg.ID
-			m.localNode.State = types.StateFollower
-			log.Printf("Following new leader: %s", msg.ID)
-		} else if msg.ID > m.leaderID && m.localNode.ID == m.leaderID {
-			// We're the leader and we have a lower ID, keep leadership
-			log.Printf("Keeping leadership (lower ID than %s)", msg.ID)
-		}
-	}
-
-	// If no leader, initiate election
-	if m.leaderID == "" {
-		m.electNewLeader()
+	// Update all nodes' leader status
+	for id, node := range m.nodes {
+		node.IsLeader = (id == leaderID)
 	}
 }
 
-func (m *Manager) sendHeartbeats() {
-	ticker := time.NewTicker(types.HeartbeatInterval)
-	defer ticker.Stop()
+// runUDPListener listens for UDP discovery messages and operator messages
+func (m *Manager) runUDPListener() {
+	buffer := make([]byte, 4096) // Increased buffer size for operator messages
 
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			m.broadcast()
-		}
-	}
-}
-
-func (m *Manager) receiveMessages() {
-	buffer := make([]byte, 4096) // Increased buffer size
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		default:
-			n, remoteAddr, err := m.conn.ReadFromUDP(buffer)
+			m.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, addr, err := m.udpConn.ReadFromUDP(buffer)
 			if err != nil {
-				log.Printf("[ClusterManager] Error reading UDP: %v", err)
-				continue
-			}
-			log.Printf("[ClusterManager] Received %d bytes from %s", n, remoteAddr.String())
-
-			var msg types.Message
-			if err := json.Unmarshal(buffer[:n], &msg); err != nil {
-				log.Printf("[ClusterManager] Error unmarshaling message: %v", err)
-				log.Printf("[ClusterManager] Raw message: %s", string(buffer[:n]))
-				continue
-			}
-
-			log.Printf("[ClusterManager] Received message type: %s from node: %s", msg.Type, msg.ID)
-
-			// Skip messages from self
-			if msg.ID == m.localNode.ID {
-				log.Printf("[ClusterManager] Skipping message from self")
-				continue
-			}
-
-			msg.Address = remoteAddr.IP.String()
-
-			switch msg.Type {
-			case types.MessageTypeHeartbeat:
-				m.handleMessage(msg)
-
-			// operator execution message from client
-			case types.MessageTypeOperatorExec:
-				log.Printf("[ClusterManager] Received operator execution message")
-				var execMsg types.OperatorExecMessage
-				if err := json.Unmarshal(msg.Data, &execMsg); err != nil {
-					log.Printf("[ClusterManager] Error unmarshaling operator exec message: %v", err)
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
 				}
-				log.Printf("[ClusterManager] Executing operator from message: %+v", execMsg)
-				go m.ExecuteOperator(context.Background(), execMsg)
-
-			// operator result message from nodes
-			case types.MessageTypeOperatorResult:
-				log.Printf("[ClusterManager] Received operator result message")
-				var result types.OperatorResult
-				if err := json.Unmarshal(msg.Data, &result); err != nil {
-					log.Printf("[ClusterManager] Error unmarshaling operator result: %v", err)
-					continue
-				}
-				if m.operatorManager != nil {
-					log.Printf("[ClusterManager] Handling operator result: %+v", result)
-					m.operatorManager.HandleOperatorResult(&result)
-				}
-
-			// operator exec request message from a node
-			case types.MessageTypeOperatorExecToLeader:
-				log.Printf("[ClusterManager] Received exec request message")
-
-				// check from which node the message came from, and if it is part of the cluster?
-				if _, exists := m.nodes[msg.ID]; !exists {
-					log.Printf("[ClusterManager] Node %s is not part of the cluster", msg.ID)
-					return
-				}
-
-				//  check if we are the leader, if so process, if not skip
-				if m.localNode.State == types.StateLeader {
-					log.Printf("[ClusterManager] Processing exec request as we are the leader")
-					var execReq types.OperatorExecMessage
-					if err := json.Unmarshal(msg.Data, &execReq); err != nil {
-						log.Printf("[ClusterManager] Error unmarshaling exec request: %v", err)
-						continue
-					}
-					log.Printf("[ClusterManager] Broadcasting operator execution to other nodes")
-					if err := m.BroadcastOperatorExecution(execReq); err != nil {
-						log.Printf("[OperatorManager] Error broadcasting execution: %v", err)
-						return
-					}
-				}
-
-			default:
-				// print the msg content
-				log.Printf("[ClusterManager] Received message: %+v", msg)
-				log.Printf("[ClusterManager] Unknown message type: %s", msg.Type)
+				log.Printf("UDP read error: %v", err)
+				continue
 			}
+
+			m.handleUDPMessage(buffer[:n], addr)
 		}
 	}
 }
 
-func (m *Manager) broadcast() {
-	if m.leaderID == m.localNode.ID && m.localNode.State != types.StateLeader {
-		m.localNode.State = types.StateLeader
-	}
-	data, err := m.localNode.Marshal()
-	if err != nil {
-		log.Printf("Error marshaling node data: %v", err)
+// handleUDPMessage handles incoming UDP messages (both discovery and operator messages)
+func (m *Manager) handleUDPMessage(data []byte, addr *net.UDPAddr) {
+	var message map[string]interface{}
+	if err := json.Unmarshal(data, &message); err != nil {
 		return
 	}
 
-	for hostname, node := range m.nodes {
-		if hostname == m.localNode.Hostname {
-			continue
-		}
+	// Check if this is a discovery message (has node_id field)
+	if _, ok := message["node_id"].(string); ok {
+		m.handleDiscoveryMessage(data, addr)
+		return
+	}
 
-		// Resolve IP address
-		ip, err := resolveHostname(node.Hostname)
-		if err != nil {
-			log.Printf("Error resolving hostname %s: %v", node.Hostname, err)
-			continue
-		}
-
-		addr := &net.UDPAddr{
-			IP:   net.ParseIP(ip),
-			Port: node.Port,
-		}
-
-		_, err = m.conn.WriteToUDP(data, addr)
-		if err != nil {
-			log.Printf("Error sending heartbeat to %s (%s:%d): %v",
-				hostname, ip, node.Port, err)
+	// Check if this is an operator message (has operation field)
+	if operation, ok := message["operation"].(string); ok {
+		if operation == "operator_response" {
+			m.handleOperatorResponse(data, addr, message)
 		} else {
-			log.Printf("Sent heartbeat to %s (%s:%d)", hostname, ip, node.Port)
+			m.handleOperatorMessage(data, addr, operation, message)
 		}
+		return
+	}
+
+	// Unknown message type, ignore
+	log.Printf("Received unknown message type from %s", addr.String())
+}
+
+// handleOperatorMessage handles incoming operator messages
+func (m *Manager) handleOperatorMessage(data []byte, addr *net.UDPAddr, operation string, message map[string]interface{}) {
+	// Extract operator name from operation string (format: "operator:operatorName")
+	if !strings.HasPrefix(operation, "operator:") {
+		log.Printf("Invalid operator operation format: %s", operation)
+		return
+	}
+
+	operatorName := strings.TrimPrefix(operation, "operator:")
+	fromNodeID, _ := message["from"].(string)
+
+	// Extract the operator request from the data field
+	dataField, ok := message["data"]
+	if !ok {
+		log.Printf("Missing data field in operator message from %s", fromNodeID)
+		return
+	}
+
+	// Convert data field to OperatorRequest
+	var request types.OperatorRequest
+
+	// Try to convert the data field to JSON and then unmarshal it
+	dataBytes, err := json.Marshal(dataField)
+	if err != nil {
+		log.Printf("Failed to marshal operator data from %s: %v", fromNodeID, err)
+		return
+	}
+
+	if err := json.Unmarshal(dataBytes, &request); err != nil {
+		log.Printf("Failed to unmarshal operator request from %s: %v", fromNodeID, err)
+		return
+	}
+
+	// Log the incoming operator request
+	log.Printf("[Node %s] Received operator request '%s' from node %s", m.nodeID, request.Operation, fromNodeID)
+
+	// Handle the operator request using the operator manager
+	if m.operatorManager != nil {
+		ctx := context.Background() // You might want to add a timeout here
+		response := m.operatorManager.HandleOperatorRequest(ctx, operatorName, &request)
+
+		// Log the execution result
+		if response.Success {
+			log.Printf("[Node %s] Successfully executed operation '%s' on operator '%s'", m.nodeID, request.Operation, operatorName)
+		} else {
+			log.Printf("[Node %s] Failed to execute operation '%s' on operator '%s': %s", m.nodeID, request.Operation, operatorName, response.Error)
+		}
+
+		// Send response back to the originating node
+		if fromNodeID != "" && fromNodeID != m.nodeID {
+			responseMessage := map[string]interface{}{
+				"operation":    "operator_response",
+				"response_to":  request.Operation,
+				"execution_id": request.NodeID, // Use NodeID as execution tracking
+				"operator":     operatorName,
+				"success":      response.Success,
+				"message":      response.Message,
+				"data":         response.Data,
+				"error":        response.Error,
+				"timestamp":    response.Timestamp,
+				"executed_on":  m.nodeID,
+				"from":         m.nodeID,
+			}
+
+			responseData, _ := json.Marshal(responseMessage)
+			if node, exists := m.GetNodes()[fromNodeID]; exists {
+				if err := m.sendToNodeAddress(node.Address, responseData); err != nil {
+					log.Printf("[Node %s] Failed to send response to node %s: %v", m.nodeID, fromNodeID, err)
+				} else {
+					log.Printf("[Node %s] Sent execution response back to node %s", m.nodeID, fromNodeID)
+				}
+			}
+		}
+	} else {
+		log.Printf("[Node %s] No operator manager available to handle request", m.nodeID)
+	}
+}
+
+// handleOperatorResponse handles incoming operator response messages
+func (m *Manager) handleOperatorResponse(data []byte, addr *net.UDPAddr, message map[string]interface{}) {
+	fromNodeID, _ := message["from"].(string)
+	executionID, _ := message["execution_id"].(string)
+	operator, _ := message["operator"].(string)
+	success, _ := message["success"].(bool)
+	responseMsg, _ := message["message"].(string)
+	executedOn, _ := message["executed_on"].(string)
+
+	if success {
+		log.Printf("[Node %s] Received SUCCESS response from %s for execution %s: %s",
+			m.nodeID, fromNodeID, executionID, responseMsg)
+	} else {
+		errorMsg, _ := message["error"].(string)
+		log.Printf("[Node %s] Received FAILURE response from %s for execution %s: %s",
+			m.nodeID, fromNodeID, executionID, errorMsg)
+	}
+
+	log.Printf("[Node %s] Operation executed on remote node %s (operator: %s)",
+		m.nodeID, executedOn, operator)
+}
+
+// handleDiscoveryMessage handles incoming discovery messages
+func (m *Manager) handleDiscoveryMessage(data []byte, addr *net.UDPAddr) {
+	var message map[string]interface{}
+	if err := json.Unmarshal(data, &message); err != nil {
+		return
+	}
+
+	nodeID, ok := message["node_id"].(string)
+	if !ok || nodeID == m.nodeID {
+		return
+	}
+
+	status, _ := message["status"].(string)
+	if status == "" {
+		status = "running"
+	}
+
+	hostname, _ := message["hostname"].(string)
+	if hostname == "" {
+		hostname = nodeID // fallback to nodeID if hostname not provided
+	}
+
+	node := &types.Node{
+		ID:       nodeID,
+		Address:  addr.String(),
+		Status:   status,
+		LastSeen: time.Now(),
+		Metadata: map[string]interface{}{
+			"hostname": hostname,
+		},
+	}
+
+	m.addNode(node)
+}
+
+// runNodeDiscovery sends discovery messages to known nodes
+func (m *Manager) runNodeDiscovery() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.sendDiscoveryMessages()
+		}
+	}
+}
+
+// sendDiscoveryMessages sends discovery messages to configured nodes
+func (m *Manager) sendDiscoveryMessages() {
+	hostname, _ := os.Hostname()
+	message := map[string]interface{}{
+		"node_id":   m.nodeID,
+		"status":    "running",
+		"hostname":  hostname,
+		"timestamp": time.Now().Unix(),
+	}
+
+	data, _ := json.Marshal(message)
+
+	for _, nodeAddr := range m.config.Nodes {
+		addr, err := net.ResolveUDPAddr("udp", nodeAddr)
+		if err != nil {
+			continue
+		}
+
+		m.udpConn.WriteToUDP(data, addr)
+	}
+}
+
+// runHealthMonitor monitors node health
+func (m *Manager) runHealthMonitor() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.checkNodeHealth()
+		}
+	}
+}
+
+// checkNodeHealth checks the health of all nodes
+func (m *Manager) checkNodeHealth() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	now := time.Now()
+	for id, node := range m.nodes {
+		if id == m.nodeID {
+			continue // Skip self
+		}
+
+		if now.Sub(node.LastSeen) > 2*time.Minute {
+			node.Status = "unreachable"
+		}
+	}
+}
+
+// addNode adds or updates a node in the cluster
+func (m *Manager) addNode(node *types.Node) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	existing, exists := m.nodes[node.ID]
+	if exists {
+		existing.LastSeen = node.LastSeen
+		existing.Status = node.Status
+		if node.Address != "" {
+			existing.Address = node.Address
+		}
+		// Update metadata if provided
+		if node.Metadata != nil {
+			existing.Metadata = node.Metadata
+		}
+	} else {
+		m.nodes[node.ID] = node
+		log.Printf("Added node: %s (%s)", node.ID, node.Address)
+	}
+}
+
+// Implement ClusterOperations interface
+
+// GetNodes returns all nodes in the cluster
+func (m *Manager) GetNodes() map[string]*types.Node {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	result := make(map[string]*types.Node)
+	for id, node := range m.nodes {
+		result[id] = &types.Node{
+			ID:       node.ID,
+			Address:  node.Address,
+			Status:   node.Status,
+			LastSeen: node.LastSeen,
+			IsLeader: node.IsLeader,
+			Metadata: node.Metadata,
+		}
+	}
+	return result
+}
+
+// GetLeader returns the current leader node ID
+func (m *Manager) GetLeader() string {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	for id, node := range m.nodes {
+		if node.IsLeader {
+			return id
+		}
+	}
+	return ""
+}
+
+// IsLeader checks if current node is the leader
+func (m *Manager) IsLeader() bool {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	return m.isLeader
+}
+
+// GetNodeID returns the current node's ID
+func (m *Manager) GetNodeID() string {
+	return m.nodeID
+}
+
+// BroadcastToNodes sends a message to all nodes
+func (m *Manager) BroadcastToNodes(operation string, data interface{}) error {
+	message := map[string]interface{}{
+		"operation": operation,
+		"data":      data,
+		"from":      m.nodeID,
+		"timestamp": time.Now().Unix(),
+	}
+
+	messageData, _ := json.Marshal(message)
+
+	for id, node := range m.GetNodes() {
+		if id == m.nodeID {
+			continue // Skip self
+		}
+
+		if err := m.sendToNodeAddress(node.Address, messageData); err != nil {
+			log.Printf("Failed to send message to node %s: %v", id, err)
+		}
+	}
+
+	return nil
+}
+
+// SendToNode sends a message to a specific node
+func (m *Manager) SendToNode(nodeID string, operation string, data interface{}) error {
+	node, exists := m.GetNodes()[nodeID]
+	if !exists {
+		return fmt.Errorf("node %s not found", nodeID)
+	}
+
+	message := map[string]interface{}{
+		"operation": operation,
+		"data":      data,
+		"from":      m.nodeID,
+		"timestamp": time.Now().Unix(),
+	}
+
+	messageData, _ := json.Marshal(message)
+	return m.sendToNodeAddress(node.Address, messageData)
+}
+
+// sendToNodeAddress sends data to a specific node address
+func (m *Manager) sendToNodeAddress(address string, data []byte) error {
+	// Extract host and port from address
+	parts := strings.Split(address, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid address format: %s", address)
+	}
+
+	port, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid port in address: %s", address)
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", parts[0], port))
+	if err != nil {
+		return err
+	}
+
+	_, err = m.udpConn.WriteToUDP(data, addr)
+	return err
+}
+
+// GetClusterState returns the current cluster state
+func (m *Manager) GetClusterState() *types.ClusterState {
+	nodes := m.GetNodes()
+	leader := m.GetLeader()
+
+	return &types.ClusterState{
+		Nodes:       nodes,
+		Leader:      leader,
+		LastUpdated: time.Now(),
+		Version:     1, // Simple version for now
 	}
 }

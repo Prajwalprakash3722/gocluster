@@ -9,3 +9,4 @@ nodes:
   node2: node2:7946
 plugins:
   - hello
+  - jobs

@@ -1,4 +1,4 @@
-package mysql_operator
+package mysql
 
 import (
 	"agent/internal/types"
@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,346 +14,468 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+// MySQLOperator implements MySQL database operations
 type MySQLOperator struct {
 	dsn       string
 	backupDir string
 	db        *sql.DB
 }
 
-func New() types.Operator {
+// New creates a new MySQL operator instance
+func New() *MySQLOperator {
 	return &MySQLOperator{}
 }
 
-// Info provides metadata about this operator.
-func (o *MySQLOperator) Info() types.OperatorInfo {
+// Info returns operator information
+func (m *MySQLOperator) Info() types.OperatorInfo {
 	return types.OperatorInfo{
 		Name:        "mysql",
 		Version:     "1.0.0",
-		Description: "MySQL database management operator",
-		Author:      "mysql-author",
+		Description: "MySQL database operations including backup, restore, and queries",
+		Author:      "prajwal.p",
+	}
+}
+
+// Init initializes the operator with configuration
+func (m *MySQLOperator) Init(config map[string]interface{}) error {
+	if dsn, ok := config["dsn"].(string); ok {
+		m.dsn = dsn
+	} else {
+		return fmt.Errorf("dsn is required for MySQL operator")
+	}
+
+	if backupDir, ok := config["backup_dir"].(string); ok {
+		m.backupDir = backupDir
+	} else {
+		m.backupDir = "/tmp/mysql-backups"
+	}
+
+	// Create backup directory if it doesn't exist
+	if err := os.MkdirAll(m.backupDir, 0755); err != nil {
+		return fmt.Errorf("failed to create backup directory: %v", err)
+	}
+
+	// Test database connection
+	db, err := sql.Open("mysql", m.dsn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MySQL: %v", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return fmt.Errorf("failed to ping MySQL: %v", err)
+	}
+
+	m.db = db
+	return nil
+}
+
+// GetOperations returns the list of supported operations
+func (m *MySQLOperator) GetOperations() []string {
+	return []string{"backup", "restore", "query", "status", "list_databases", "list_tables"}
+}
+
+// Execute performs the specified operation
+func (m *MySQLOperator) Execute(ctx context.Context, operation string, params map[string]interface{}) (*types.OperationResult, error) {
+	result := &types.OperationResult{
+		Timestamp: time.Now(),
+		NodeID:    "local",
+	}
+
+	switch operation {
+	case "backup":
+		return m.backup(ctx, params, result)
+	case "restore":
+		return m.restore(ctx, params, result)
+	case "query":
+		return m.query(ctx, params, result)
+	case "status":
+		return m.status(ctx, result)
+	case "list_databases":
+		return m.listDatabases(ctx, result)
+	case "list_tables":
+		return m.listTables(ctx, params, result)
+	default:
+		result.Success = false
+		result.Error = fmt.Sprintf("unsupported operation: %s", operation)
+		return result, fmt.Errorf("unsupported operation: %s", operation)
+	}
+}
+
+// backup creates a backup of the specified database
+func (m *MySQLOperator) backup(ctx context.Context, params map[string]interface{}, result *types.OperationResult) (*types.OperationResult, error) {
+	database, ok := params["database"].(string)
+	if !ok || database == "" {
+		result.Success = false
+		result.Error = "database parameter is required"
+		return result, fmt.Errorf("database parameter is required")
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	backupFile := filepath.Join(m.backupDir, fmt.Sprintf("%s_%s.sql", database, timestamp))
+
+	// Extract connection details from DSN for mysqldump
+	parts := strings.Split(m.dsn, "@")
+	if len(parts) != 2 {
+		result.Success = false
+		result.Error = "invalid DSN format"
+		return result, fmt.Errorf("invalid DSN format")
+	}
+
+	userPass := strings.Split(parts[0], ":")
+	if len(userPass) != 2 {
+		result.Success = false
+		result.Error = "invalid user:password format in DSN"
+		return result, fmt.Errorf("invalid user:password format in DSN")
+	}
+
+	hostPort := strings.Split(strings.TrimPrefix(parts[1], "tcp("), ")")
+	if len(hostPort) == 0 {
+		result.Success = false
+		result.Error = "invalid host:port format in DSN"
+		return result, fmt.Errorf("invalid host:port format in DSN")
+	}
+
+	host := "localhost"
+	port := "3306"
+	if strings.Contains(hostPort[0], ":") {
+		hostPortParts := strings.Split(hostPort[0], ":")
+		host = hostPortParts[0]
+		port = hostPortParts[1]
+	}
+
+	// Execute mysqldump
+	cmd := exec.CommandContext(ctx, "mysqldump",
+		"-h", host,
+		"-P", port,
+		"-u", userPass[0],
+		fmt.Sprintf("-p%s", userPass[1]),
+		"--single-transaction",
+		"--routines",
+		"--triggers",
+		database,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("mysqldump failed: %v", err)
+		return result, err
+	}
+
+	if err := os.WriteFile(backupFile, output, 0644); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to write backup file: %v", err)
+		return result, err
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("Database %s backed up successfully", database)
+	result.Data = map[string]interface{}{
+		"database":    database,
+		"backup_file": backupFile,
+		"size":        len(output),
+		"timestamp":   timestamp,
+	}
+
+	return result, nil
+}
+
+// restore restores a database from backup
+func (m *MySQLOperator) restore(ctx context.Context, params map[string]interface{}, result *types.OperationResult) (*types.OperationResult, error) {
+	database, ok := params["database"].(string)
+	if !ok || database == "" {
+		result.Success = false
+		result.Error = "database parameter is required"
+		return result, fmt.Errorf("database parameter is required")
+	}
+
+	backupFile, ok := params["backup_file"].(string)
+	if !ok || backupFile == "" {
+		result.Success = false
+		result.Error = "backup_file parameter is required"
+		return result, fmt.Errorf("backup_file parameter is required")
+	}
+
+	if !filepath.IsAbs(backupFile) {
+		backupFile = filepath.Join(m.backupDir, backupFile)
+	}
+
+	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
+		result.Success = false
+		result.Error = fmt.Sprintf("backup file %s does not exist", backupFile)
+		return result, fmt.Errorf("backup file %s does not exist", backupFile)
+	}
+
+	// Read backup file
+	content, err := os.ReadFile(backupFile)
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to read backup file: %v", err)
+		return result, err
+	}
+
+	// Execute restore
+	_, err = m.db.ExecContext(ctx, string(content))
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to restore database: %v", err)
+		return result, err
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("Database %s restored successfully from %s", database, backupFile)
+	result.Data = map[string]interface{}{
+		"database":    database,
+		"backup_file": backupFile,
+		"size":        len(content),
+	}
+
+	return result, nil
+}
+
+// query executes a SQL query
+func (m *MySQLOperator) query(ctx context.Context, params map[string]interface{}, result *types.OperationResult) (*types.OperationResult, error) {
+	sql, ok := params["sql"].(string)
+	if !ok || sql == "" {
+		result.Success = false
+		result.Error = "sql parameter is required"
+		return result, fmt.Errorf("sql parameter is required")
+	}
+
+	rows, err := m.db.QueryContext(ctx, sql)
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("query failed: %v", err)
+		return result, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to get columns: %v", err)
+		return result, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			result.Success = false
+			result.Error = fmt.Sprintf("failed to scan row: %v", err)
+			return result, err
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			row[col] = values[i]
+		}
+		results = append(results, row)
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("Query executed successfully, returned %d rows", len(results))
+	result.Data = map[string]interface{}{
+		"columns": columns,
+		"rows":    results,
+		"count":   len(results),
+	}
+
+	return result, nil
+}
+
+// status returns MySQL server status
+func (m *MySQLOperator) status(ctx context.Context, result *types.OperationResult) (*types.OperationResult, error) {
+	var version string
+	err := m.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version)
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to get MySQL version: %v", err)
+		return result, err
+	}
+
+	result.Success = true
+	result.Message = "MySQL server is accessible"
+	result.Data = map[string]interface{}{
+		"version":    version,
+		"status":     "connected",
+		"backup_dir": m.backupDir,
+	}
+
+	return result, nil
+}
+
+// listDatabases lists all databases
+func (m *MySQLOperator) listDatabases(ctx context.Context, result *types.OperationResult) (*types.OperationResult, error) {
+	rows, err := m.db.QueryContext(ctx, "SHOW DATABASES")
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to list databases: %v", err)
+		return result, err
+	}
+	defer rows.Close()
+
+	var databases []string
+	for rows.Next() {
+		var db string
+		if err := rows.Scan(&db); err != nil {
+			result.Success = false
+			result.Error = fmt.Sprintf("failed to scan database name: %v", err)
+			return result, err
+		}
+		databases = append(databases, db)
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("Found %d databases", len(databases))
+	result.Data = map[string]interface{}{
+		"databases": databases,
+		"count":     len(databases),
+	}
+
+	return result, nil
+}
+
+// listTables lists tables in a database
+func (m *MySQLOperator) listTables(ctx context.Context, params map[string]interface{}, result *types.OperationResult) (*types.OperationResult, error) {
+	database, ok := params["database"].(string)
+	if !ok || database == "" {
+		result.Success = false
+		result.Error = "database parameter is required"
+		return result, fmt.Errorf("database parameter is required")
+	}
+
+	query := fmt.Sprintf("SHOW TABLES FROM %s", database)
+	rows, err := m.db.QueryContext(ctx, query)
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to list tables: %v", err)
+		return result, err
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			result.Success = false
+			result.Error = fmt.Sprintf("failed to scan table name: %v", err)
+			return result, err
+		}
+		tables = append(tables, table)
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("Found %d tables in database %s", len(tables), database)
+	result.Data = map[string]interface{}{
+		"database": database,
+		"tables":   tables,
+		"count":    len(tables),
+	}
+
+	return result, nil
+}
+
+// GetOperationSchema returns the schema for all operations
+func (m *MySQLOperator) GetOperationSchema() types.OperatorSchema {
+	info := m.Info()
+
+	return types.OperatorSchema{
+		Name:        info.Name,
+		Version:     info.Version,
+		Description: info.Description,
+		Author:      info.Author,
 		Operations: map[string]types.OperationSchema{
-			"health_check": {
-				Description: "Checks the health of the MySQL node",
-				Parameters: map[string]types.ParamSchema{
-					"timeout": {
-						Type:        "int",
-						Required:    false,
-						Default:     5,
-						Description: "Timeout in seconds for health check",
-					},
-				},
-			},
 			"backup": {
-				Description: "Creates a database backup",
-				Parameters: map[string]types.ParamSchema{
+				Description: "Create a backup of the specified database",
+				Parameters: map[string]types.ParameterSchema{
 					"database": {
 						Type:        "string",
 						Required:    true,
-						Description: "Name of the database to back up",
-					},
-					"compress": {
-						Type:        "bool",
-						Required:    false,
-						Default:     true,
-						Description: "Whether to compress the backup",
+						Description: "Name of the database to backup",
+						Example:     "myapp_production",
 					},
 				},
-				Config: map[string]types.ParamSchema{
-					"retention_days": {
-						Type:        "int",
-						Required:    false,
-						Default:     7,
-						Description: "Number of days to retain backups",
-					},
+				Examples: []map[string]interface{}{
+					{"database": "myapp_production"},
+					{"database": "analytics_db"},
 				},
 			},
-			"create_database": {
-				Description: "Creates a new database",
-				Parameters: map[string]types.ParamSchema{
-					"name": {
+			"restore": {
+				Description: "Restore a database from backup",
+				Parameters: map[string]types.ParameterSchema{
+					"database": {
 						Type:        "string",
 						Required:    true,
-						Description: "Name of the database to create",
+						Description: "Name of the database to restore to",
+						Example:     "myapp_production",
 					},
-					"charset": {
+					"backup_file": {
 						Type:        "string",
-						Required:    false,
-						Default:     "utf8mb4",
-						Description: "Character set for the database",
+						Required:    true,
+						Description: "Path to backup file (relative to backup_dir or absolute)",
+						Example:     "myapp_production_20240612_120000.sql",
 					},
-					"collation": {
-						Type:        "string",
-						Required:    false,
-						Default:     "utf8mb4_general_ci",
-						Description: "Collation for the database",
+				},
+				Examples: []map[string]interface{}{
+					{
+						"database":    "myapp_production",
+						"backup_file": "myapp_production_20240612_120000.sql",
 					},
 				},
 			},
-			"show_databases": {
-				Description: "Lists all databases",
-				Parameters: map[string]types.ParamSchema{
-					"pattern": {
+			"query": {
+				Description: "Execute a SQL query",
+				Parameters: map[string]types.ParameterSchema{
+					"sql": {
 						Type:        "string",
-						Required:    false,
-						Description: "Pattern to filter database names",
+						Required:    true,
+						Description: "SQL query to execute",
+						Example:     "SELECT COUNT(*) FROM users",
 					},
 				},
+				Examples: []map[string]interface{}{
+					{"sql": "SELECT COUNT(*) FROM users"},
+					{"sql": "SHOW TABLES"},
+					{"sql": "SELECT * FROM orders WHERE created_at > '2024-01-01' LIMIT 10"},
+				},
 			},
-			"show_variables": {
-				Description: "Shows MySQL system variables",
-				Parameters: map[string]types.ParamSchema{
-					"like": {
+			"status": {
+				Description: "Get MySQL server status and connection info",
+				Parameters:  map[string]types.ParameterSchema{},
+			},
+			"list_databases": {
+				Description: "List all databases on the MySQL server",
+				Parameters:  map[string]types.ParameterSchema{},
+			},
+			"list_tables": {
+				Description: "List tables in a specific database",
+				Parameters: map[string]types.ParameterSchema{
+					"database": {
 						Type:        "string",
-						Required:    false,
-						Description: "Filter variables using LIKE pattern",
+						Required:    true,
+						Description: "Name of the database to list tables from",
+						Example:     "myapp_production",
 					},
+				},
+				Examples: []map[string]interface{}{
+					{"database": "myapp_production"},
 				},
 			},
 		},
 	}
 }
 
-// Init initializes the operator with necessary configurations.
-func (o *MySQLOperator) Init(config map[string]interface{}) error {
-	// Get DSN from config
-	dsn, ok := config["dsn"].(string)
-	if !ok {
-		return fmt.Errorf("DSN not provided in config")
-	}
-	o.dsn = dsn
-
-	// Get backup directory from config or use default
-	if backupDir, ok := config["backup_dir"].(string); ok {
-		o.backupDir = backupDir
-	} else {
-		o.backupDir = "/var/lib/mysql/backups"
-	}
-
-	// Create backup directory if it doesn't exist
-	if err := os.MkdirAll(o.backupDir, 0755); err != nil {
-		return fmt.Errorf("failed to create backup directory: %v", err)
-	}
-
-	// Initialize database connection
-	db, err := sql.Open("mysql", o.dsn)
-	if err != nil {
-		return fmt.Errorf("failed to initialize database connection: %v", err)
-	}
-
-	// Test connection
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return fmt.Errorf("failed to connect to database: %v", err)
-	}
-
-	o.db = db
-	return nil
-}
-
-// Execute runs the specified MySQL operation.
-func (o *MySQLOperator) Execute(ctx context.Context, params map[string]interface{}) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		operation, ok := params["operation"].(string)
-		if !ok {
-			return fmt.Errorf("operation not specified")
-		}
-
-		operationParams, _ := params["params"].(map[string]interface{})
-		configParams, _ := params["config"].(map[string]interface{})
-
-		switch operation {
-		case "health_check":
-			timeout := getIntParam(operationParams, "timeout", 5)
-			return o.healthCheck(timeout)
-
-		case "backup":
-			database := getStringParam(operationParams, "database", "")
-			if database == "" {
-				return fmt.Errorf("database parameter is required")
-			}
-			compress := getBoolParam(operationParams, "compress", true)
-			retentionDays := getIntParam(configParams, "retention_days", 7)
-			return o.backupDatabase(database, compress, retentionDays)
-
-		case "create_database":
-			name := getStringParam(operationParams, "name", "")
-			if name == "" {
-				return fmt.Errorf("database name is required")
-			}
-			charset := getStringParam(operationParams, "charset", "utf8mb4")
-			collation := getStringParam(operationParams, "collation", "utf8mb4_general_ci")
-			return o.createDatabase(name, charset, collation)
-
-		case "show_databases":
-			pattern := getStringParam(operationParams, "pattern", "")
-			return o.showDatabases(pattern)
-
-		case "show_variables":
-			like := getStringParam(operationParams, "like", "")
-			return o.showVariables(like)
-
-		default:
-			return fmt.Errorf("unknown operation: %s", operation)
-		}
-	}
-}
-
-func (o *MySQLOperator) healthCheck(timeout int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	if err := o.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("health check failed: %v", err)
-	}
-
-	var version string
-	if err := o.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
-		return fmt.Errorf("failed to get version: %v", err)
-	}
-
-	fmt.Printf("MySQL is healthy (Version: %s)\n", version)
-	return nil
-}
-
-func (o *MySQLOperator) backupDatabase(database string, compress bool, retentionDays int) error {
-	// Create timestamp-based backup filename
-	timestamp := time.Now().Format("20060102_150405")
-	backupFile := filepath.Join(o.backupDir, fmt.Sprintf("%s_%s.sql", database, timestamp))
-	if compress {
-		backupFile += ".gz"
-	}
-
-	// Simulate backup for demonstration
-	fmt.Printf("Backing up database '%s' to '%s'\n", database, backupFile)
-
-	// Cleanup old backups
-	return o.cleanupOldBackups(retentionDays)
-}
-
-func (o *MySQLOperator) createDatabase(name, charset, collation string) error {
-	query := fmt.Sprintf(
-		"CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s COLLATE %s",
-		name, charset, collation,
-	)
-
-	if _, err := o.db.Exec(query); err != nil {
-		return fmt.Errorf("failed to create database: %v", err)
-	}
-
-	fmt.Printf("Database '%s' created successfully\n", name)
-	return nil
-}
-
-func (o *MySQLOperator) showDatabases(pattern string) error {
-	query := "SHOW DATABASES"
-	if pattern != "" {
-		query += fmt.Sprintf(" LIKE '%s'", pattern)
-	}
-
-	rows, err := o.db.Query(query)
-	if err != nil {
-		return fmt.Errorf("failed to list databases: %v", err)
-	}
-	defer rows.Close()
-
-	fmt.Println("\nDatabases:")
-	fmt.Println("-------------------")
-	for rows.Next() {
-		var dbName string
-		if err := rows.Scan(&dbName); err != nil {
-			return fmt.Errorf("failed to scan database name: %v", err)
-		}
-		fmt.Println(dbName)
+// Cleanup performs cleanup when the operator is being stopped
+func (m *MySQLOperator) Cleanup() error {
+	if m.db != nil {
+		return m.db.Close()
 	}
 	return nil
-}
-
-func (o *MySQLOperator) showVariables(like string) error {
-	query := "SHOW VARIABLES"
-	if like != "" {
-		query += fmt.Sprintf(" LIKE '%s'", like)
-	}
-
-	rows, err := o.db.Query(query)
-	if err != nil {
-		return fmt.Errorf("failed to get variables: %v", err)
-	}
-	defer rows.Close()
-
-	fmt.Println("\nMySQL Variables:")
-	fmt.Println("-------------------")
-	for rows.Next() {
-		var name, value string
-		if err := rows.Scan(&name, &value); err != nil {
-			return fmt.Errorf("failed to scan variable: %v", err)
-		}
-		fmt.Printf("%s = %s\n", name, value)
-	}
-	return nil
-}
-
-func (o *MySQLOperator) cleanupOldBackups(retentionDays int) error {
-	cutoff := time.Now().AddDate(0, 0, -retentionDays)
-
-	entries, err := os.ReadDir(o.backupDir)
-	if err != nil {
-		return fmt.Errorf("failed to read backup directory: %v", err)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				backupPath := filepath.Join(o.backupDir, entry.Name())
-				if err := os.Remove(backupPath); err != nil {
-					fmt.Printf("Warning: Failed to remove old backup %s: %v\n", entry.Name(), err)
-				} else {
-					fmt.Printf("Removed old backup: %s\n", entry.Name())
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// Rollback handles failure scenarios
-func (o *MySQLOperator) Rollback(ctx context.Context) error {
-	// Implementation depends on the operation being rolled back
-	return nil
-}
-
-// Cleanup performs necessary cleanup
-func (o *MySQLOperator) Cleanup() error {
-	if o.db != nil {
-		return o.db.Close()
-	}
-	return nil
-}
-
-// Helper functions
-func getStringParam(params map[string]interface{}, key, defaultValue string) string {
-	if val, ok := params[key].(string); ok {
-		return val
-	}
-	return defaultValue
-}
-
-func getIntParam(params map[string]interface{}, key string, defaultValue int) int {
-	if val, ok := params[key].(float64); ok {
-		return int(val)
-	}
-	return defaultValue
-}
-
-func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
-	if val, ok := params[key].(bool); ok {
-		return val
-	}
-	return defaultValue
 }

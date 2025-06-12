@@ -39,32 +39,107 @@ make linux
 
 ### Configuration
 
-Create `cluster.yaml`:
+Now you have 3 state store options, 
+
+- In-Memory
 ```yaml
 cluster:
-  name: mycluster
+  name: docker-cluster
   discovery_port: 7946
   bind_address: 0.0.0.0
   web_address: 0.0.0.0:8080
   enable_operator: true
 
+backend:
+  type: memory
 nodes:
-  node001: node001:7946
-  node002: node002:7946
-  node003: node003:7946
+  node001: localhost:7946
 
 plugins:
-  - aerospike-config
+  - hello
+  - jobs
+```
+
+- EtcD
+```yaml
+cluster:
+  name: mycluster-etcd
+  discovery_port: 7946
+  bind_address: 0.0.0.0
+  web_address: 0.0.0.0:8080
+  enable_operators: true
+
+backend:
+  type: etcd
+  namespace: gocluster-test
+  
+  etcd_endpoints:
+    - localhost:2379
+  
+  etcd_username: ""
+  etcd_password: ""
+  etcd_cert_file: ""
+  etcd_key_file: ""
+  etcd_ca_file: ""
+  
+  leader_ttl: 30s
+  renew_interval: 10s
+
+nodes:
+  node001: 127.0.0.1:7946
+
+plugins:
+  - jobs
+  - hello
+```
+
+- Zookeeper
+```yaml
+cluster:
+  name: docker-cluster
+  discovery_port: 7946
+  bind_address: 0.0.0.0
+  web_address: 0.0.0.0:8080
+  enable_operator: true
+
+backend:
+  type: zookeeper
+  namespace: "gocluster"
+  
+  zk_hosts:
+    - "localhost:2181"
+  zk_timeout: "30s"
+  zk_session_path: "/gocluster/sessions"
+
+nodes:
+  node001: localhost:7946
+
+plugins:
+  - hello
+  - jobs
+
 ```
 
 ### Usage
 
 1. Start the agent:
 ```bash
-./agent -c cluster.yaml
+./gocluster-manager -c cluster.yaml
 ```
 
-2. Access the web interface at `http://localhost:8080`, or use the CLI tool to manage the cluster. (web doesn't have any functionality to interact with the cluster yet, it can only show the status of the cluster and nodes)
+2. Access the web interface at `http://localhost:8080`, or use the CLI tool to manage the cluster.
+3. 
+![alt text](image.png)
+
+### View Operators from web UI
+![alt text](image-1.png)
+
+### Trigger Operations from web UI
+![alt text](image-2.png) 
+
+### Execution Strategy
+![alt text](image-3.png)
+![alt text](image-4.png)
 
 ### CLI Tool
 
@@ -107,42 +182,72 @@ type Operator interface {
 
 ```
 .
-├── Dockerfile
-├── LICENSE
-├── Makefile
-├── README.md
-├── cluster.yaml
 ├── cmd
 │   └── gocluster-manager
 │       └── main.go
+├── configs
+│   ├── docker-cluster.yaml
+│   └── test-config-etcd.yaml
+├── docker
+│   ├── cluster.yaml
+│   ├── cluster2.yaml
+│   └── cluster3.yaml
 ├── docker-compose.yml
+├── Dockerfile
 ├── go.mod
 ├── go.sum
 ├── gocluster-manager
 ├── gocluster-manager-macos
-└── internal
-    ├── cluster
-    │   └── manager.go
-    ├── config
-    │   └── config.go
-    ├── operator
-    │   ├── manager.go
-    │   └── plugins
-    │       ├── aerospike
-    │       │   ├── aerospike_operator.go
-    │       │   └── config.go
-    │       ├── hello
-    │       │   └── operator.go
-    │       └── mysql
-    │           └── mysql_operator.go
-    ├── types
-    │   └── types.go
-    └── web
-        ├── handler.go
-        └── templates
-            └── index.html
+├── image-1.png
+├── image-2.png
+├── image-3.png
+├── image-4.png
+├── image.png
+├── internal
+│   ├── cluster
+│   │   └── manager.go
+│   ├── config
+│   │   └── config.go
+│   ├── operator
+│   │   ├── manager.go
+│   │   ├── plugins
+│   │   │   ├── aerospike
+│   │   │   │   ├── aerospike_operator.go
+│   │   │   │   └── config.go
+│   │   │   ├── hello
+│   │   │   │   └── operator.go
+│   │   │   ├── jobs
+│   │   │   │   └── jobs_operator.go
+│   │   │   └── mysql
+│   │   │       └── mysql_operator.go
+│   │   ├── plugins.go
+│   │   └── registry.go
+│   ├── types
+│   │   └── types.go
+│   └── web
+│       ├── handler.go
+│       ├── static
+│       │   ├── css
+│       │   │   └── github-style.css
+│       │   ├── icons
+│       │   └── js
+│       │       ├── gocluster-ui.js
+│       │       └── operator-forms.js
+│       └── templates
+│           ├── index.html
+│           └── operator-forms.html
+├── LICENSE
+├── Makefile
+├── README.md
+├── scripts
+│   ├── run-etcd.sh
+│   ├── run-zookeeper.sh
+│   ├── start-cluster-zk.sh
+│   ├── stop-cluster.sh
+│   └── test-operations.sh
+└── test-config.yaml
 
-14 directories, 21 files
+22 directories, 43 files
 ```
 
 ## Roadmap
@@ -150,10 +255,10 @@ _(Highly dependent on my mood and time availability)_ :smile:
 - [ ] Add Debug/Info/Error Logs (priority)
 - [ ] Add Tests
 - [x] Custom operation framework
-- [ ] Distributed task execution system
+- [x] Distributed task execution system
 - [ ] Secure communication (TLS/mTLS)
-- [ ] Web-based cluster management UI
-- [ ] Metrics and monitoring
+- [x] Web-based cluster management UI
+- [x] Metrics and monitoring
 - [ ] Multi-region support
 
 ## Contributing

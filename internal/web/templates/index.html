@@ -1,79 +1,372 @@
 {{define "status"}}
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>GoCluster Status</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoCluster Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
         .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        .dark {
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+        
+        .card {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+        }
+        
+        .header {
+            background-color: #21262d;
+            border-bottom: 1px solid #30363d;
+        }
+        
+        .nav a {
+            color: #c9d1d9;
+            transition: all 0.2s;
+        }
+        
+        .nav a:hover, .nav a.active {
+            background-color: #30363d;
+            color: #f0f6fc;
+        }
+        
+        .status-dot-green { background-color: #238636; }
+        .status-dot-red { background-color: #da3633; }
+        .status-dot-blue { background-color: #0969da; }
+        
+        .node-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+        }
+        
+        .leader-badge {
+            background: linear-gradient(135deg, #0969da, #0550ae);
+            color: white;
+        }
+        
+        .command-palette {
+            backdrop-filter: blur(8px);
+        } 
+        * {
+            transition: all 0.2s ease-in-out;
+        }
     </style>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        theme: {
+                            dark: '#0d1117',
+                            darker: '#010409',
+                            light: '#161b22',
+                            border: '#30363d',
+                            text: '#c9d1d9',
+                            accent: '#58a6ff'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8">
-        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
-            <div class="flex justify-between items-center mb-6">
-                <h1 class="text-3xl font-bold text-gray-800">GoCluster Status</h1>
-                <div class="flex items-center">
-                    <div id="statusDot" class="w-3 h-3 rounded-full bg-green-500 pulse mr-2"></div>
-                    <span id="lastUpdate" class="text-sm text-gray-500">Updating...</span>
+<body class="dark min-h-screen">
+    <header class="header px-4 py-3 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2">
+                    <i class="fas fa-cube text-xl text-accent"></i>
+                    <h1 class="text-xl font-semibold text-white">GoCluster</h1>
                 </div>
+                
+                <nav class="nav hidden md:flex items-center space-x-1">
+                    <a href="/" class="px-3 py-2 rounded-md text-sm font-medium active">
+                        <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                    </a>
+                    <a href="/nodes" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-server mr-2"></i>Nodes
+                    </a>
+                    <a href="/operators" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-cogs mr-2"></i>Operators
+                    </a>
+                    <a href="/operator-forms" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-wpforms mr-2"></i>Operator Forms
+                    </a>
+                    <a href="/operations" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-history mr-2"></i>Operations
+                    </a>
+                    <a href="/logs" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-file-alt mr-2"></i>Logs
+                    </a>
+                </nav>
             </div>
+            
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2">
+                    <div id="statusDot" class="w-3 h-3 rounded-full status-dot-green pulse"></div>
+                    <span id="lastUpdate" class="text-sm text-gray-400">Updating...</span>
+                </div>
+                
+                <div class="flex items-center space-x-2 text-sm">
+                    <i class="fas fa-server text-accent"></i>
+                    <span class="text-text">{{.LocalNode.ID}}</span>
+                    {{if eq .LocalNode.State "leader"}}
+                        <span class="leader-badge px-2 py-1 rounded-full text-xs font-medium">LEADER</span>
+                    {{end}}
+                </div>
+                
+                <button onclick="toggleCommandPalette()" class="text-gray-400 hover:text-white">
+                    <i class="fas fa-search"></i>
+                    <span class="hidden sm:inline ml-1">⌘K</span>
+                </button>
+            </div>
+        </div>
+    </header>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors duration-150">
-                    <h2 class="text-xl font-semibold mb-4">Local Node</h2>
-                    <div id="localNode" class="space-y-2">
-                        <p><span class="font-medium">Cluster Name:</span> {{.ClusterName}}</p>
-                        <p><span class="font-medium">ID:</span> {{.LocalNode.ID}}</p>
-                        <p><span class="font-medium">State:</span>
-                            <span class="px-2 py-1 rounded-full text-sm {{if eq .LocalNode.State "leader"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800{{end}}">
-                                {{.LocalNode.State}}
-                            </span>
-                        </p>
-                        <p><span class="font-medium">Address:</span> {{.LocalNode.Address}}:{{.LocalNode.Port}}</p>
+    <div class="max-w-7xl mx-auto px-4 py-6">
+        <div class="card rounded-lg p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 bg-accent rounded-full flex items-center justify-center">
+                        <i class="fas fa-project-diagram text-white text-sm"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-semibold text-white">{{.ClusterName}} Cluster</h2>
+                        <p class="text-sm text-gray-400">Real-time cluster monitoring and management</p>
                     </div>
                 </div>
-
-                <div class="bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors duration-150">
-                    <h2 class="text-xl font-semibold mb-4">Cluster Info</h2>
-                    <div id="clusterInfo" class="space-y-2">
-                        <p><span class="font-medium">Leader:</span> {{.Leader}}</p>
-                        <p><span class="font-medium">Total Nodes:</span> {{len .Nodes}}</p>
-                    </div>
+                <div class="flex items-center space-x-4">
+                    <button onclick="refreshData()" class="px-4 py-2 bg-accent text-white rounded-md hover:bg-blue-600 transition-colors">
+                        <i class="fas fa-sync-alt mr-2"></i>Refresh
+                    </button>
                 </div>
             </div>
         </div>
 
-        <div class="bg-white rounded-lg shadow-lg p-6">
-            <h2 class="text-xl font-semibold mb-4">Cluster Nodes</h2>
-            <div id="nodes" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {{range .Nodes}}
-                <div class="bg-white p-4 rounded-lg shadow hover:shadow-lg transition-shadow duration-150 cursor-pointer" title="Click for details">
-                    <div class="flex justify-between items-start">
-                        <div>
-                            <h3 class="font-medium">{{.ID}}</h3>
-                            <p class="text-sm text-gray-500">{{.Address}}:{{.Port}}</p>
-                        </div>
-                        <span class="px-2 py-1 rounded-full text-sm {{if eq .State "leader"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800{{end}}">
-                            {{.State}}
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <div class="card rounded-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center">
+                        <i class="fas fa-desktop mr-2 text-accent"></i>
+                        Local Node
+                    </h3>
+                    <div class="w-2 h-2 rounded-full status-dot-green"></div>
+                </div>
+                <div id="localNode" class="space-y-3">
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Cluster:</span>
+                        <span class="text-white font-medium">{{.ClusterName}}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">ID:</span>
+                        <span class="text-accent font-mono text-sm">{{.LocalNode.ID}}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">State:</span>
+                        <span class="px-2 py-1 rounded-full text-xs font-medium {{if eq .LocalNode.State "leader"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800{{end}}">
+                            {{.LocalNode.State}}
                         </span>
                     </div>
-                    <div class="mt-2 text-sm text-gray-500">
-                        Last seen: <span class="last-seen" data-time="{{.LastSeen}}"></span>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Address:</span>
+                        <span class="text-white font-mono text-sm">{{.LocalNode.Address}}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card rounded-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center">
+                        <i class="fas fa-network-wired mr-2 text-accent"></i>
+                        Cluster Overview
+                    </h3>
+                </div>
+                <div id="clusterInfo" class="space-y-3">
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Leader:</span>
+                        <span class="text-accent font-mono text-sm">{{.Leader}}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Total Nodes:</span>
+                        <span class="text-white font-semibold">{{len .Nodes}}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Running:</span>
+                        <span class="text-green-400 font-semibold">{{.RunningNodes}}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Last Updated:</span>
+                        <span class="text-gray-300 text-sm">{{.LastUpdated}}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card rounded-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center">
+                        <i class="fas fa-bolt mr-2 text-accent"></i>
+                        Quick Actions
+                    </h3>
+                </div>
+                <div class="space-y-3">
+                    <button onclick="executeHelloOperator()" class="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors flex items-center justify-center">
+                        <i class="fas fa-hand-wave mr-2"></i>
+                        Say Hello
+                    </button>
+                    <button onclick="viewApiStatus()" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors flex items-center justify-center">
+                        <i class="fas fa-chart-line mr-2"></i>
+                        API Status
+                    </button>
+                    <button onclick="viewNodeMetrics()" class="w-full px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors flex items-center justify-center">
+                        <i class="fas fa-analytics mr-2"></i>
+                        Node Metrics
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card rounded-lg p-6 mb-6">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-white flex items-center">
+                    <i class="fas fa-server mr-3 text-accent"></i>
+                    Cluster Nodes
+                </h3>
+                <div class="flex items-center space-x-2">
+                    <span class="text-sm text-gray-400">{{len .Nodes}} nodes</span>
+                    <button onclick="refreshNodes()" class="text-gray-400 hover:text-white">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <div id="nodes" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {{range .Nodes}}
+                <div class="node-card bg-light border border-border rounded-lg p-4 hover:border-accent transition-all duration-200">
+                    <div class="flex justify-between items-start mb-3">
+                        <div>
+                            <h4 class="font-semibold text-white text-sm">{{.ID}}</h4>
+                            <p class="text-xs text-gray-400 font-mono">{{.Address}}</p>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            {{if .IsLeader}}
+                                <span class="leader-badge px-2 py-1 rounded-full text-xs font-medium">
+                                    <i class="fas fa-crown mr-1"></i>LEADER
+                                </span>
+                            {{end}}
+                            <span class="px-2 py-1 rounded-full text-xs font-medium {{if .IsLeader}}bg-blue-100 text-blue-800{{else if eq .Status "running"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800{{end}}">
+                                {{.Status}}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-2 text-xs">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400 flex items-center">
+                                <i class="fas fa-clock mr-1"></i>Last seen:
+                            </span>
+                            <span class="last-seen text-gray-300" data-time="{{.LastSeen}}"></span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-400 flex items-center">
+                                <i class="fas fa-heartbeat mr-1"></i>Status:
+                            </span>
+                            <span class="text-green-400">Healthy</span>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 pt-3 border-t border-border">
+                        <button onclick="viewNodeDetails('{{.ID}}')" class="w-full text-xs py-2 px-3 bg-accent text-white rounded-md hover:bg-blue-600 transition-colors">
+                            <i class="fas fa-info-circle mr-1"></i>View Details
+                        </button>
                     </div>
                 </div>
                 {{end}}
+            </div>
+        </div>
+
+        {{if .Operators}}
+        <div class="card rounded-lg p-6">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-white flex items-center">
+                    <i class="fas fa-cogs mr-3 text-accent"></i>
+                    Active Operators
+                </h3>
+                <span class="text-sm text-gray-400">{{len .Operators}} operators</span>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {{range .Operators}}
+                <div class="bg-light border border-border rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center space-x-2">
+                            <i class="fas fa-puzzle-piece text-accent"></i>
+                            <h4 class="font-semibold text-white">{{.Name}}</h4>
+                            <span class="text-xs text-gray-400">v{{.Version}}</span>
+                        </div>
+                        <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                    </div>
+                    
+                    <p class="text-sm text-gray-300 mb-3">{{.Description}}</p>
+                    
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-gray-400">Author: {{.Author}}</span>
+                        <button onclick="executeOperator('{{.Name}}')" class="px-3 py-1 bg-accent text-white rounded-md hover:bg-blue-600 transition-colors">
+                            <i class="fas fa-play mr-1"></i>Execute
+                        </button>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <div id="commandPalette" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm hidden items-center justify-center z-50 command-palette">
+        <div class="bg-light border border-border rounded-lg w-full max-w-2xl mx-4 overflow-hidden">
+            <div class="p-4 border-b border-border">
+                <input 
+                    type="text" 
+                    id="paletteInput" 
+                    placeholder="Type a command..." 
+                    class="w-full bg-transparent text-white placeholder-gray-400 outline-none"
+                >
+            </div>
+            <div id="paletteResults" class="max-h-80 overflow-y-auto">
+                <div class="p-3 hover:bg-border cursor-pointer border-b border-border">
+                    <div class="flex items-center space-x-3">
+                        <i class="fas fa-sync-alt text-accent"></i>
+                        <span class="text-white">Refresh all data</span>
+                    </div>
+                </div>
+                <div class="p-3 hover:bg-border cursor-pointer border-b border-border">
+                    <div class="flex items-center space-x-3">
+                        <i class="fas fa-server text-accent"></i>
+                        <span class="text-white">View all nodes</span>
+                    </div>
+                </div>
+                <div class="p-3 hover:bg-border cursor-pointer">
+                    <div class="flex items-center space-x-3">
+                        <i class="fas fa-cogs text-accent"></i>
+                        <span class="text-white">Manage operators</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         const evtSource = new EventSource('/events');
-
+        
         function timeAgo(date) {
             const seconds = Math.floor((new Date() - new Date(date)) / 1000);
             if (seconds < 60) return seconds + "s ago";
@@ -92,23 +385,187 @@
         }
 
         function updateStatus(data) {
-            document.getElementById('statusDot').classList.add('bg-green-500');
-            document.getElementById('statusDot').classList.remove('bg-red-500');
+            const statusDot = document.getElementById('statusDot');
+            statusDot.classList.remove('status-dot-red');
+            statusDot.classList.add('status-dot-green');
             document.getElementById('lastUpdate').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
         }
 
+        function toggleCommandPalette() {
+            const palette = document.getElementById('commandPalette');
+            const isHidden = palette.classList.contains('hidden');
+            
+            if (isHidden) {
+                palette.classList.remove('hidden');
+                palette.classList.add('flex');
+                document.getElementById('paletteInput').focus();
+            } else {
+                palette.classList.add('hidden');
+                palette.classList.remove('flex');
+            }
+        }
+
+        
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                toggleCommandPalette();
+            }
+            if (e.key === 'Escape') {
+                document.getElementById('commandPalette').classList.add('hidden');
+                document.getElementById('commandPalette').classList.remove('flex');
+            }
+        });
+
+        
+        document.getElementById('commandPalette').addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.classList.add('hidden');
+                this.classList.remove('flex');
+            }
+        });
+
+        
+        function refreshData() {
+            location.reload();
+        }
+
+        function refreshNodes() {
+            
+            const button = event.target;
+            button.classList.add('animate-spin');
+            setTimeout(() => {
+                button.classList.remove('animate-spin');
+                location.reload();
+            }, 500);
+        }
+
+        function executeHelloOperator() {
+            const name = prompt('Enter name parameter:') || 'World';
+            
+            fetch('/api/operator/trigger/hello', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    operation: 'greet',
+                    params: { name: name }
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Hello operator executed successfully!', 'success');
+                } else {
+                    showNotification('Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showNotification('Network error: ' + error, 'error');
+            });
+        }
+
+        function executeOperator(operatorName) {
+            const operation = prompt('Enter operation name:') || 'info';
+            const params = prompt('Enter parameters (JSON format):') || '{}';
+            
+            let parsedParams;
+            try {
+                parsedParams = JSON.parse(params);
+            } catch (e) {
+                showNotification('Invalid JSON parameters', 'error');
+                return;
+            }
+            
+            fetch('/api/operator/trigger/' + operatorName, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    operation: operation,
+                    params: parsedParams
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Operator executed successfully!', 'success');
+                } else {
+                    showNotification('Error: ' + data.error, 'error');
+                }
+            });
+        }
+
+        function viewApiStatus() {
+            window.open('/api/status', '_blank');
+        }
+
+        function viewNodeMetrics() {
+            window.open('/api/cluster/metrics', '_blank');
+        }
+
+        function viewNodeDetails(nodeId) {
+            showNotification('Node details: ' + nodeId, 'info');
+        }
+
+        function showNotification(message, type) {
+            
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg text-white z-50 transition-all transform translate-x-full`;
+            
+            switch (type) {
+                case 'success':
+                    notification.classList.add('bg-green-600');
+                    notification.innerHTML = `<i class="fas fa-check-circle mr-2"></i>${message}`;
+                    break;
+                case 'error':
+                    notification.classList.add('bg-red-600');
+                    notification.innerHTML = `<i class="fas fa-exclamation-circle mr-2"></i>${message}`;
+                    break;
+                default:
+                    notification.classList.add('bg-blue-600');
+                    notification.innerHTML = `<i class="fas fa-info-circle mr-2"></i>${message}`;
+            }
+            
+            document.body.appendChild(notification);
+            
+            
+            setTimeout(() => {
+                notification.classList.remove('translate-x-full');
+            }, 100);
+            
+            
+            setTimeout(() => {
+                notification.classList.add('translate-x-full');
+                setTimeout(() => {
+                    document.body.removeChild(notification);
+                }, 300);
+            }, 3000);
+        }
+
+        
         setInterval(updateTimes, 1000);
         updateTimes();
 
+        
         evtSource.onmessage = function(event) {
             const data = JSON.parse(event.data);
             updateStatus(data);
         };
 
         evtSource.onerror = function() {
-            document.getElementById('statusDot').classList.remove('bg-green-500');
-            document.getElementById('statusDot').classList.add('bg-red-500');
+            const statusDot = document.getElementById('statusDot');
+            statusDot.classList.remove('status-dot-green');
+            statusDot.classList.add('status-dot-red');
+            document.getElementById('lastUpdate').textContent = 'Connection lost';
         };
+
+        
+        setTimeout(() => {
+            if (!evtSource || evtSource.readyState === EventSource.CLOSED) {
+                setInterval(() => {
+                    location.reload();
+                }, 30000);
+            }
+        }, 5000);
     </script>
 </body>
 </html>

@@ -1,0 +1,407 @@
+{{define "operator-forms"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Operator Forms - GoCluster Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        .dark {
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+        
+        .card {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+        }
+        
+        .header {
+            background-color: #21262d;
+            border-bottom: 1px solid #30363d;
+        }
+        
+        .nav a {
+            color: #c9d1d9;
+            transition: all 0.2s;
+        }
+        
+        .nav a:hover, .nav a.active {
+            background-color: #30363d;
+            color: #f0f6fc;
+        }
+        
+        .status-dot-green { background-color: #238636; }
+        .status-dot-red { background-color: #da3633; }
+        .status-dot-blue { background-color: #0969da; }
+        
+        .leader-badge {
+            background: linear-gradient(135deg, #0969da, #0550ae);
+            color: white;
+        }
+
+        .form-input {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+        }
+
+        .form-input:focus {
+            border-color: #1f6feb;
+            box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.1);
+        }
+
+        .btn-primary {
+            background-color: #238636;
+            border-color: #238636;
+        }
+
+        .btn-primary:hover {
+            background-color: #2ea043;
+        }
+
+        .btn-secondary {
+            background-color: #21262d;
+            border-color: #30363d;
+        }
+
+        .btn-secondary:hover {
+            background-color: #30363d;
+        }
+
+        .operator-card {
+            transition: all 0.2s ease;
+        }
+
+        .operator-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+        }
+
+        .operation-form {
+            display: none;
+        }
+
+        .operation-form.active {
+            display: block;
+        }
+
+        .json-output {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+
+        .example-btn {
+            background-color: #1f6feb;
+            border-color: #1f6feb;
+            font-size: 0.75rem;
+        }
+
+        .example-btn:hover {
+            background-color: #388bfd;
+        }
+
+        .required-field::after {
+            content: "*";
+            color: #f85149;
+            margin-left: 4px;
+        }
+
+        .notification {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            max-width: 400px;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.success {
+            background-color: #238636;
+            border-color: #2ea043;
+        }
+
+        .notification.error {
+            background-color: #da3633;
+            border-color: #f85149;
+        }
+
+        .notification.info {
+            background-color: #1f6feb;
+            border-color: #388bfd;
+        }
+
+        .loading-spinner {
+            border: 2px solid #30363d;
+            border-top: 2px solid #1f6feb;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        * {
+            transition: all 0.2s ease-in-out;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        theme: {
+                            dark: '#0d1117',
+                            darker: '#010409',
+                            light: '#161b22',
+                            border: '#30363d',
+                            text: '#c9d1d9',
+                            accent: '#58a6ff'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="dark min-h-screen">
+    <header class="header px-4 py-3 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2">
+                    <i class="fas fa-cube text-xl text-accent"></i>
+                    <h1 class="text-xl font-semibold text-white">GoCluster</h1>
+                </div>
+                
+                <nav class="nav hidden md:flex items-center space-x-1">
+                    <a href="/" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-tachometer-alt mr-2"></i>Dashboard
+                    </a>
+                    <a href="/nodes" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-server mr-2"></i>Nodes
+                    </a>
+                    <a href="/operators" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-cogs mr-2"></i>Operators
+                    </a>
+                    <a href="/operator-forms" class="px-3 py-2 rounded-md text-sm font-medium active">
+                        <i class="fas fa-wpforms mr-2"></i>Operator Forms
+                    </a>
+                    <a href="/operations" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-history mr-2"></i>Operations
+                    </a>
+                    <a href="/logs" class="px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-file-alt mr-2"></i>Logs
+                    </a>
+                </nav>
+            </div>
+            
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2">
+                    <div id="statusDot" class="w-3 h-3 rounded-full status-dot-green pulse"></div>
+                    <span id="lastUpdate" class="text-sm text-gray-400">{{.LastUpdated}}</span>
+                </div>
+                
+                <div class="flex items-center space-x-2 text-sm">
+                    <i class="fas fa-server text-accent"></i>
+                    <span class="text-text">{{.LocalNode.ID}}</span>
+                    {{if eq .LocalNode.State "leader"}}
+                        <span class="leader-badge px-2 py-1 rounded-full text-xs font-medium">LEADER</span>
+                    {{end}}
+                </div>
+                
+                <button onclick="refreshOperators()" class="text-gray-400 hover:text-white">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <div class="max-w-7xl mx-auto px-4 py-6">
+        <!-- Header -->
+        <div class="card rounded-lg p-6 mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-2xl font-bold text-white mb-2">
+                        <i class="fas fa-wpforms text-blue-400 mr-3"></i>
+                        Operator Forms
+                    </h2>
+                    <p class="text-gray-400">
+                        Dynamic forms for executing operations based on operator schemas
+                    </p>
+                </div>
+                <div class="flex space-x-3">
+                    <button onclick="showJSONMode()" id="jsonModeBtn" class="btn-secondary px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                        <i class="fas fa-code mr-2"></i>JSON Mode
+                    </button>
+                    <button onclick="clearForm()" class="btn-secondary px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                        <i class="fas fa-eraser mr-2"></i>Clear
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Operator Selection -->
+            <div class="card rounded-lg p-6">
+                <h3 class="text-lg font-semibold text-white mb-4">
+                    <i class="fas fa-cogs text-blue-400 mr-2"></i>
+                    Select Operator
+                </h3>
+                <div id="operatorList" class="space-y-3">
+                    <!-- Populate with available operators -->
+                    {{range $name, $info := .Operators}}
+                    <div class="operator-card card p-4 rounded-lg cursor-pointer transition-all" data-operator="{{$name}}">
+                        <div class="flex items-center justify-between mb-2">
+                            <h4 class="font-semibold text-white">{{$info.Name}}</h4>
+                            <span class="text-xs text-gray-400">v{{$info.Version}}</span>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-2">{{$info.Description}}</p>
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-gray-400">by {{$info.Author}}</span>
+                            <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Operation Form -->
+            <div class="lg:col-span-2 card rounded-lg p-6">
+                <div id="operationHeader" class="mb-6" style="display: none;">
+                    <h3 class="text-lg font-semibold text-white mb-2">
+                        <i class="fas fa-play text-green-400 mr-2"></i>
+                        <span id="operationTitle">Execute Operation</span>
+                    </h3>
+                    <p id="operationDescription" class="text-gray-400 mb-4"></p>
+                    
+                    <!-- Operation Selection -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Operation</label>
+                        <select id="operationSelect" class="form-input w-full px-3 py-2 rounded-md" onchange="loadOperationForm()">
+                            <option value="">Select an operation...</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Dynamic Form Container -->
+                <div id="formContainer">
+                    <div class="text-center text-gray-400 py-12">
+                        <i class="fas fa-mouse-pointer text-4xl mb-4"></i>
+                        <p>Select an operator to begin</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Result Display -->
+        <div id="resultContainer" class="card rounded-lg p-6 mt-6" style="display: none;">
+            <h3 class="text-lg font-semibold text-white mb-4">
+                <i class="fas fa-terminal text-green-400 mr-2"></i>
+                Execution Result
+            </h3>
+            <div id="resultContent" class="json-output p-4 rounded-md font-mono text-sm whitespace-pre-wrap"></div>
+        </div>
+    </div>
+
+    <!-- JSON Mode Modal -->
+    <div id="jsonModal" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm hidden items-center justify-center z-50">
+        <div class="card w-full max-w-4xl mx-4 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-white">
+                    <i class="fas fa-code text-blue-400 mr-2"></i>
+                    JSON Mode
+                </h3>
+                <button onclick="hideJSONMode()" class="text-gray-400 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Request JSON</label>
+                    <textarea id="jsonInput" class="json-output w-full h-64 p-3 rounded-md font-mono text-sm" placeholder='{"operation": "greet", "params": {"name": "World"}}'></textarea>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Response JSON</label>
+                    <div id="jsonOutput" class="json-output w-full h-64 p-3 rounded-md font-mono text-sm overflow-auto"></div>
+                </div>
+            </div>
+            <div class="flex justify-end space-x-3 mt-4">
+                <button onclick="executeJSONRequest()" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
+                    <i class="fas fa-play mr-2"></i>Execute
+                </button>
+                <button onclick="hideJSONMode()" class="btn-secondary px-4 py-2 rounded-md text-sm font-medium">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/operator-forms.js"></script>
+    <script>
+        // Global variables for template data - convert Go structs to JavaScript objects
+        window.templateOperators = {};
+        {{range $name, $info := .Operators}}
+        window.templateOperators["{{$name}}"] = {
+            "name": "{{$info.Name}}",
+            "version": "{{$info.Version}}",
+            "description": "{{$info.Description}}",
+            "author": "{{$info.Author}}"
+        };
+        {{end}}
+        
+        console.log('Template operators loaded:', Object.keys(window.templateOperators));
+        // Initialize cluster data
+        window.clusterData = {
+            clusterName: "{{.ClusterName}}",
+            localNode: {
+                id: "{{.LocalNode.ID}}",
+                state: "{{.LocalNode.State}}",
+                address: "{{.LocalNode.Address}}"
+            },
+            leader: "{{.Leader}}",
+            nodes: {}
+        };
+        
+        // Load nodes data via API to avoid template parsing issues
+        async function loadNodesData() {
+            try {
+                const response = await fetch('/api/nodes');
+                const data = await response.json();
+                if (data.success) {
+                    window.clusterData.nodes = data.data.nodes;
+                    console.log('Loaded cluster nodes:', Object.keys(window.clusterData.nodes).length);
+                }
+            } catch (error) {
+                console.error('Failed to load nodes data:', error);
+            }
+        }
+        
+        // Load nodes data on page load
+        loadNodesData();
+    </script>
+</body>
+</html>
+{{end}}
